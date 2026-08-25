@@ -155,8 +155,8 @@ echo   1) English
 echo   2) 中文 (Chinese)
 set "LC="
 set /p LC=选择语言 / Select language [1-2]：
-if "%LC%"=="2" "%PYEXE%" -c "import sys;sys.path.insert(0,r'%ROOT%.');import i18n;i18n.set_lang('zh');print('已切换为中文，下次启动游戏生效。')"
-if "%LC%"=="1" "%PYEXE%" -c "import sys;sys.path.insert(0,r'%ROOT%.');import i18n;i18n.set_lang('en');print('Switched to English.')"
+if "%LC%"=="2" "%PYEXE%" "%ROOT%set_language.py" zh
+if "%LC%"=="1" "%PYEXE%" "%ROOT%set_language.py" en
 pause
 goto :menu
 
