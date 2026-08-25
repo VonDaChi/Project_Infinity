@@ -19,3 +19,6 @@ python_embeded/
 
 # WorkBuddy runtime data (AI memory / plans / session state)
 .workbuddy/
+
+# Runtime user preferences (language, etc.)
+config/settings.yml
