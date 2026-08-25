@@ -1,6 +1,12 @@
 import argparse
 import os
+import sys
 import random
+# Ensure the project root is importable even when launched via an embedded
+# interpreter from a different working directory (so the `forge` package resolves).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from forge.config_loader import load_config
 from forge.character_creator import create_character, create_debug_character
 from forge.population_generator import populate_world
@@ -47,7 +53,7 @@ def main():
         world_history=world_history
     )
 
-    output_dir = "output"
+    output_dir = os.path.join(_HERE, "output")
     os.makedirs(output_dir, exist_ok=True)
     output_filename = f"{player_character.name.lower().replace(' ', '_')}_weave.wwf"
     output_path = os.path.abspath(os.path.join(output_dir, output_filename))

@@ -9,10 +9,19 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+# Ensure the project root (where display.py lives) is importable even when this
+# module is imported/run via an embedded interpreter from a different working
+# directory (e.g. spawned indirectly or launched standalone).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from display import format_stats, render_gm_text, render_image
 
-LOCK_FILE = "GameMaster_MCP.md"
-OUTPUT_DIR = "output"
+# Resolve data paths against the project root (this file's directory) rather
+# than the current working directory, so gameplay works regardless of where the
+# embedded interpreter is launched from.
+LOCK_FILE = os.path.join(_HERE, "GameMaster_MCP.md")
+OUTPUT_DIR = os.path.join(_HERE, "output")
 TIMELINE_INTERVAL = 5  # rounds between timeline snapshots
 
 TIMELINE_PROMPT = """SYSTEM INSTRUCTION: You have just completed several rounds of gameplay.
@@ -127,9 +136,13 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
         key_content = f.read()
 
     try:
+        dice_server_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "dice_server.py"
+        )
         async with stdio_client(StdioServerParameters(
             command=sys.executable,
-            args=["dice_server.py", player_path],
+            args=[dice_server_path, player_path],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
         )) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
