@@ -9,6 +9,11 @@ from prompt_toolkit.formatted_text import HTML
 from google import genai
 from google.genai import types
 from google.genai import errors as genai_errors
+# Ensure the project root (where game_engine.py lives) is importable even when
+# launched via an embedded interpreter from a different working directory.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from game_engine import run_game, console
 
 AVAILABLE_MODELS = [

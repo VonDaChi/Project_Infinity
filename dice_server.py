@@ -5,6 +5,12 @@ import json
 import sqlite3
 import os
 import re
+# Ensure the project root (where level_up.py lives) is importable even when this
+# script is spawned as an MCP subprocess via an embedded interpreter, whose
+# sys.path does not automatically include the script's own directory.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 from mcp.server.fastmcp import FastMCP
 from level_up import apply_level_up, CASTER_TYPE_MAP, SLOT_TABLES, FULL_CASTER_SPELL_SLOTS, WARLOCK_SPELL_SLOTS
 

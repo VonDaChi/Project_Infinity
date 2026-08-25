@@ -1,16 +1,22 @@
 # forge/character_creator.py
 # Version 6.0 - Modern TUI Character Creation with Interactive Spell Selection
 
-from .models import PlayerCharacter, Stats, Equipment, Skill, SpecialAbility, Item, StartingEquipmentOption, CharacterClass
-from .config_loader import Config, Race, SubRace, Weapon
-import math
-import random
 import sys
 import os
+import math
+import random
 import re
 from typing import Optional, List, Dict
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+# Make the project root importable so the top-level `level_up` module (which is
+# NOT part of the `forge` package) resolves even when this file is imported from
+# a working directory other than the project root (e.g. embedded interpreter).
+_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PARENT not in sys.path:
+    sys.path.insert(0, _PARENT)
+
+from .models import PlayerCharacter, Stats, Equipment, Skill, SpecialAbility, Item, StartingEquipmentOption, CharacterClass
+from .config_loader import Config, Race, SubRace, Weapon
 from level_up import FULL_CASTER_SPELL_SLOTS, HALF_CASTER_SPELL_SLOTS, WARLOCK_SPELL_SLOTS
 from . import tui
 from .class_spells import (

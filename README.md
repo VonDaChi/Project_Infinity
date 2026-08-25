@@ -58,6 +58,34 @@ source venv/bin/activate      # Linux/macOS
 pip install -r requirements.txt
 ```
 
+### 2b. Portable（嵌入式 Python，免系统依赖）
+
+如果你不想在系统里装 Python、或想把整套运行时随项目一起带走，可以用自带的便携方案——它会把独立的 Python 解释器与全部依赖装进项目内的 `python_embeded\` 文件夹（参照 ComfyUI Portable 思路），完全不碰系统 Python。下载走国内镜像（清华），镜像不可达时自动回退官方源。
+
+```bash
+# 第一步：搭建便携环境（仅需一次；已存在则自动跳过）
+setup.bat
+
+# 第二步：启动菜单，按数字选择后端
+launch.bat
+```
+
+`launch.bat` 菜单项：
+
+| 序号 | 后端 | 说明 |
+|------|------|------|
+| 1 | 生成世界 | `main.py` World Forge |
+| 2 | Ollama | 本地模型（`play.py`） |
+| 3 | KoboldCpp | 本地/局域网（`play_with_kobold.py`） |
+| 4 | DeepSeek | 需 `DEEPSEEK_API_KEY` |
+| 5 | OpenAI | 需 `OPENAI_API_KEY` |
+| 6 | Gemini | 需 `GEMINI_API_KEY` |
+| 7 | Claude | 需 `ANTHROPIC_API_KEY` |
+
+**局域网对接 KoboldCpp**：在菜单选 3，提示输入额外参数时填入 `--base-url http://<KoboldCpp所在机器IP>:5001/v1` 即可。注意本地模型需支持 OpenAI 风格的 tool/function calling（本项目靠函数调用驱动骰子与状态机）。
+
+> 云后端（4–7）启动前若未设置对应 API key，`launch.bat` 会提示你临时输入（仅本次会话生效）。
+
 ### 3. Choose Your AI Backend
 
 | Backend | Requirements | Supported Models | Play Command |
