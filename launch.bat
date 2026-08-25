@@ -70,14 +70,14 @@ goto :end
 :kobold
 echo.
 echo KoboldCpp 地址：仅输入主机或 IP 即可（默认 localhost）
-echo 将自动拼接为 http://主机:5001/v1
+echo 将自动拼接为 http://HOST:5001/v1
 set "KOIP="
 set /p KOIP=KoboldCpp 主机 [默认 localhost]：
 if "!KOIP!"=="" set "KOIP=localhost"
-REM 若用户直接粘贴了完整 URL（含 ://），则原样使用；否则按 host 拼 5001 端口
+REM If user pasted a full URL (contains ://), use it as-is; otherwise append :5001/v1.
 echo !KOIP! | findstr "://" >nul && set "KOURL=!KOIP!" || set "KOURL=http://!KOIP!:5001/v1"
 echo 使用端点：!KOURL!
-REM 可选：追加其它参数（如 --model / --temperature），留空则用默认；勿重复 --base-url
+REM Optional extra args (--model / --temperature). Leave empty for defaults.
 set "EXTRA="
 set /p EXTRA=额外参数（可空）：
 "%PYEXE%" "%ROOT%play_with_kobold.py" --base-url "!KOURL!" !EXTRA!
