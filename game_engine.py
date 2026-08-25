@@ -16,6 +16,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 from display import format_stats, render_gm_text, render_image
+import i18n
+from i18n import tr
 
 # Resolve data paths against the project root (this file's directory) rather
 # than the current working directory, so gameplay works regardless of where the
@@ -38,6 +40,38 @@ text with actual content. Keep it concise. Output ONLY the entry — no extra na
 - Items: [gained/used key items]
 - Reputation: [changed factions, if any]
 **Active Hooks**: [all unresolved plot threads, one per line]"""
+
+# Language directives appended as extra system messages. The English GM
+# protocol (GameMaster_MCP.md) is never modified; these only steer narration
+# language while explicitly protecting protocol tokens and timeline markers.
+ZH_DIRECTIVE = (
+    "LANGUAGE DIRECTIVE: Narrate ALL story content, NPC dialogue, and "
+    "descriptions in Simplified Chinese (简体中文). The player writes actions "
+    "in Chinese. You MUST keep unchanged, in English: all {{...}} protocol "
+    "tokens, tool calls and their arguments, and the timeline format markers "
+    "(**Key Events**, **NPCs**, **Mechanical Changes**, **Active Hooks**)."
+)
+EN_DIRECTIVE = (
+    "LANGUAGE DIRECTIVE: Narrate ALL story content in English again. "
+    "The player may write actions in English."
+)
+# User-role notes used to propagate a mid-game /lang switch to incremental
+# adapters (they cache the system message and would not re-read it).
+LANG_SWITCH_NOTE_ZH = (
+    "[SYSTEM INSTRUCTION - not a player action] The interface language has been "
+    "switched to Chinese. From your next reply onward, narrate ALL story content "
+    "in Simplified Chinese (简体中文), keeping all {{...}} protocol tokens and "
+    "tool calls unchanged. Do not narrate about this instruction."
+)
+LANG_SWITCH_NOTE_EN = (
+    "[SYSTEM INSTRUCTION - not a player action] The interface language has been "
+    "switched to English. Narrate in English again from your next reply onward. "
+    "Do not narrate about this instruction."
+)
+
+# Command prefixes recognised as system instructions (language-independent).
+# Only '/' is implemented today; add '-' here if dash-commands are ever needed.
+COMMAND_PREFIXES = ('/',)
 
 
 def load_timeline(timeline_path):
@@ -77,19 +111,19 @@ def get_wwf_files():
 async def select_wwf(input_session):
     files = get_wwf_files()
     if not files:
-        console.print("[bold red]Error:[/bold red] No .wwf files found in the output directory.")
+        console.print(f"[bold red]{tr('err.prefix')}[/bold red] {tr('err.no_wwf')}")
         sys.exit(1)
 
-    console.print(Panel("[bold magenta] Infinity Project: World Selection [/bold magenta]", expand=False))
+    console.print(Panel(f"[bold magenta]{tr('world.title')}[/bold magenta]", expand=False))
     for i, f in enumerate(files):
         console.print(f"[cyan]{i+1}[/cyan] {f}")
 
-    choice = await input_session.prompt_async(HTML('<ansicyan><b>Select a world file (number)</b></ansicyan> '))
+    choice = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("world.prompt")}</b></ansicyan> '))
     try:
         idx = int(choice) - 1
         return os.path.join(OUTPUT_DIR, files[idx])
     except (ValueError, IndexError):
-        console.print("[red]Invalid selection. Defaulting to first file.[/red]")
+        console.print(f"[red]{tr('world.invalid')}[/red]")
         return os.path.join(OUTPUT_DIR, files[0])
 
 
@@ -117,15 +151,18 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
     VERBOSE = verbose
     DEBUG = debug
 
+    # Load persisted UI language (missing/corrupt settings -> English).
+    i18n.load_saved()
+
     if VERBOSE:
-        console.print("[dim]Verbose mode enabled[/dim]")
+        console.print(f"[dim]{tr('mode.verbose')}[/dim]")
     if DEBUG:
-        console.print("[dim]Debug mode enabled[/dim]")
+        console.print(f"[dim]{tr('mode.debug')}[/dim]")
 
     input_session = PromptSession()
 
     wwf_path = await select_wwf(input_session)
-    console.print(f"\n[green]Selected world:[/green] {wwf_path}")
+    console.print(f"\n[green]{tr('world.selected')}[/green] {wwf_path}")
 
     player_path = os.path.splitext(wwf_path)[0] + ".player"
     timeline_path = os.path.splitext(wwf_path)[0] + ".timeline.md"
@@ -164,8 +201,14 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
                 round_counter = 0
                 narrative_counter = 0
 
+                # Single system message = GM protocol + optional language directive.
+                # Most adapters cache the LAST system message they see, so a second
+                # system message would REPLACE the protocol — always concatenate.
+                system_content = lock_content
+                if i18n.get_lang() == "zh":
+                    system_content = lock_content + "\n\n" + ZH_DIRECTIVE
                 messages = [
-                    {"role": "system", "content": lock_content}
+                    {"role": "system", "content": system_content}
                 ]
                 if existing_timeline:
                     messages.append({
@@ -207,7 +250,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 ))
 
                         if response.get('malformed_function_call'):
-                            return "The GM stumbles over their words... (malformed response)"
+                            return tr('gm.malformed')
 
                         response_msg = response['message']
                         content = response_msg['content'] if response_msg else ""
@@ -256,7 +299,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             })
 
                         if response.get('thinking_only') and thinking_retries >= MAX_THINKING_RETRIES:
-                            return "The GM pauses, deep in thought..."
+                            return tr('gm.deep_thought')
 
                         tool_calls_list = response_msg.get('tool_calls')
                         if tool_calls_list:
@@ -317,7 +360,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     image_path = os.path.join(OUTPUT_DIR, "current_scene.png")
                     os.makedirs(OUTPUT_DIR, exist_ok=True)
                     try:
-                        with console.status("[bold magenta]Generating image...[/bold magenta]"):
+                        with console.status(f"[bold magenta]{tr('img.generating')}[/bold magenta]"):
                             image = await image_gen_fn(narrative_text, char_anchor=char_anchor, hp_info=hp_info)
                         if image:
                             image.save(image_path)
@@ -334,16 +377,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                 async def handle_slash_command(cmd):
                     cmd = cmd.strip().lower()
                     if cmd == '/help':
-                        help_text = (
-                            "[bold white]Available Commands:[/bold white]\n\n"
-                            "  [cyan]/help[/cyan]  - Show this help message\n"
-                            "  [cyan]/stats[/cyan] - Display current player stats\n"
-                            "  [cyan]/save[/cyan]  - Overwrite your .player file with your current character sheet (active effects are cleared/reverted)\n"
-                            "  [cyan]/sync[/cyan]  - Force a database sync with the GM\n"
-                            "  [cyan]/quit[/cyan]  - Exit the game\n\n"
-                            "[dim]Type anything else to send as an action to the Game Master.[/dim]"
-                        )
-                        console.print(Panel(help_text, title="[bold magenta]Help[/bold magenta]", border_style="magenta", expand=False))
+                        console.print(Panel(tr('help.body'), title=f"[bold magenta]{tr('help.title')}[/bold magenta]", border_style="magenta", expand=False))
                     elif cmd == '/stats':
                         result = await session.call_tool("dump_player_db", arguments={})
                         if hasattr(result, 'content') and result.content:
@@ -356,13 +390,13 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 for panel in format_stats(db_data):
                                     console.print(panel)
                             else:
-                                console.print(Panel(str(db_data), title="[bold green]Player Stats[/bold green]", border_style="green", expand=False))
+                                console.print(Panel(str(db_data), title=f"[bold green]{tr('stats.player_title')}[/bold green]", border_style="green", expand=False))
                         else:
-                            console.print("[yellow]Could not retrieve player stats.[/yellow]")
+                            console.print(f"[yellow]{tr('stats.fail')}[/yellow]")
                     elif cmd == '/sync':
-                        console.print("[dim]Synchronizing database...[/dim]")
+                        console.print(f"[dim]{tr('sync.start')}[/dim]")
                         await chat_with_tools("{{_SYNC_DATABASE}}")
-                        console.print(Panel("[green]Database synchronized.[/green]", border_style="green", expand=False))
+                        console.print(Panel(f"[green]{tr('sync.done')}[/green]", border_style="green", expand=False))
                     elif cmd == '/save':
                         result = await session.call_tool("dump_player_db", arguments={})
                         if hasattr(result, 'content') and result.content:
@@ -397,24 +431,49 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             db_data["_active_buff_data"] = {}
                             with open(player_path, "w", encoding="utf-8") as f:
                                 json.dump(db_data, f, indent=2)
-                            msg = f"[green]Character sheet saved to {player_path}[/green]"
+                            msg = f"[green]{tr('save.done', path=player_path)}[/green]"
                             if cleared:
-                                msg += f"\n[dim]Reverted effects for save: {', '.join(cleared)}[/dim]"
+                                msg += f"\n[dim]{tr('save.reverted', names=', '.join(cleared))}[/dim]"
                             console.print(Panel(msg, border_style="green", expand=False))
                         else:
-                            console.print("[red]Save failed — could not read database.[/red]")
+                            console.print(f"[red]{tr('save.fail')}[/red]")
                     elif cmd == '/quit':
                         return 'quit'
+                    elif cmd.startswith('/lang'):
+                        parts = cmd.split()
+                        if len(parts) == 1:
+                            console.print(Panel(
+                                f"{tr('lang.current', lang=i18n.get_lang())}\n"
+                                f"[dim]{tr('lang.usage')}[/dim]",
+                                border_style="magenta", expand=False))
+                        elif parts[1] in i18n._SUPPORTED:
+                            i18n.set_lang(parts[1])
+                            directive = ZH_DIRECTIVE if parts[1] == 'zh' else EN_DIRECTIVE
+                            # 1) Rewrite the single system message in place (works for
+                            #    full-history adapters and persists across restarts).
+                            base = messages[0]["content"]
+                            for d in (ZH_DIRECTIVE, EN_DIRECTIVE):
+                                base = base.replace("\n\n" + d, "")
+                            messages[0]["content"] = base + "\n\n" + directive
+                            # 2) Incremental adapters cache the system message, so
+                            #    propagate the switch via a user-role note instead.
+                            messages.append({"role": "user", "content":
+                                             LANG_SWITCH_NOTE_ZH if parts[1] == 'zh' else LANG_SWITCH_NOTE_EN})
+                            console.print(Panel(
+                                tr('lang.switched', name=tr(f'lang.name.{parts[1]}')),
+                                border_style="green", expand=False))
+                        else:
+                            console.print(f"[yellow]{tr('lang.invalid', lang=parts[1])}[/yellow]")
                     else:
-                        console.print(f"[yellow]Unknown command: {cmd}[/yellow]")
-                        console.print("[dim]Type /help for available commands.[/dim]")
+                        console.print(f"[yellow]{tr('cmd.unknown', cmd=cmd)}[/yellow]")
+                        console.print(f"[dim]{tr('cmd.hint_help')}[/dim]")
                     return None
 
-                console.print("\n[yellow]Injecting World Data (The Key)...[/yellow]")
+                console.print(f"\n[yellow]{tr('inject.world')}[/yellow]")
                 if VERBOSE:
                     response_text = await chat_with_tools(key_content)
                 else:
-                    with console.status("[bold blue]GM is thinking...[/bold blue]"):
+                    with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
                         response_text = await chat_with_tools(key_content)
 
                 while response_text == "__SYSTEM_PAUSE__":
@@ -423,7 +482,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     if VERBOSE:
                         response_text = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
                     else:
-                        with console.status("[bold blue]GM is thinking...[/bold blue]"):
+                        with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
                             response_text = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
 
                 if image_gen_fn and image_frequency > 0 and response_text and response_text != "__SYSTEM_PAUSE__":
@@ -435,16 +494,16 @@ Refer to them when the player asks about past events. Do not replay or re-descri
 
                 console.print(Panel(
                     Padding(render_gm_text(response_text), (1, 1)),
-                    title="[bold magenta]The Game Master Awakens[/bold magenta]",
+                    title=f"[bold magenta]{tr('gm.awakens')}[/bold magenta]",
                     border_style="magenta"
                 ))
 
-                console.print("\n[bold cyan]--- Game Started. Type /help for commands. ---[/bold cyan]\n")
+                console.print(f"\n[bold cyan]{tr('game.started')}[/bold cyan]\n")
 
                 while True:
                     if VERBOSE or DEBUG:
                         console.print(f"[dim]Context: {current_context_tokens:,} / {context_window:,} tokens[/dim]")
-                    user_input = await input_session.prompt_async(HTML('<ansicyan><b>Your Action:</b></ansicyan> '))
+                    user_input = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("prompt.action")}</b></ansicyan> '))
                     user_input = user_input.strip()
 
                     if not user_input:
@@ -453,7 +512,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     if user_input.startswith('/'):
                         result = await handle_slash_command(user_input)
                         if result == 'quit':
-                            console.print("[yellow]Closing connection to the void... Goodbye.[/yellow]")
+                            console.print(f"[yellow]{tr('quit.goodbye')}[/yellow]")
                             break
                         continue
 
@@ -461,13 +520,13 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         if VERBOSE:
                             gm_response = await chat_with_tools(user_input)
                         else:
-                            with console.status("[bold blue]GM is thinking...[/bold blue]"):
+                            with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
                                 gm_response = await chat_with_tools(user_input)
                     except KeyboardInterrupt:
-                        console.print("\n[yellow]Interrupted. Type /quit to exit.[/yellow]")
+                        console.print(f"\n[yellow]{tr('game.interrupted')}[/yellow]")
                         continue
                     except Exception as e:
-                        console.print(f"[bold red]Error communicating with GM: {e}[/bold red]")
+                        console.print(f"[bold red]{tr('gm.error', e=e)}[/bold red]")
                         continue
 
                     while gm_response == "__SYSTEM_PAUSE__":
@@ -476,7 +535,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         if VERBOSE:
                             gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
                         else:
-                            with console.status("[bold blue]GM is thinking...[/bold blue]"):
+                            with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
                                 gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
 
                     if gm_response and gm_response != "__SYSTEM_PAUSE__":
@@ -490,7 +549,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         if clean_response:
                             console.print(Panel(
                                 Padding(render_gm_text(clean_response), (1, 1)),
-                                title="[bold magenta]Game Master[/bold magenta]",
+                                title=f"[bold magenta]{tr('gm.title')}[/bold magenta]",
                                 border_style="magenta"
                             ))
                             console.print("\n")
@@ -520,9 +579,9 @@ Refer to them when the player asks about past events. Do not replay or re-descri
 
 
     except KeyboardInterrupt:
-        console.print("\n[yellow]Game interrupted. Goodbye.[/yellow]")
+        console.print(f"\n[yellow]{tr('game.bye')}[/yellow]")
     except Exception as e:
         import traceback
         traceback.print_exc()
-        console.print(f"\n[bold red]Fatal error: {e}[/bold red]")
-        console.print("[dim]The game session has ended unexpectedly.[/dim]")
+        console.print(f"\n[bold red]{tr('game.fatal', e=e)}[/bold red]")
+        console.print(f"[dim]{tr('game.ended')}[/dim]")

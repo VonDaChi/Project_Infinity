@@ -5,6 +5,12 @@ import os
 from rich.panel import Panel
 from rich.console import Console
 
+import os as _os, sys as _sys
+_HERE = _os.path.dirname(_os.path.abspath(__file__))
+if _HERE not in _sys.path:
+    _sys.path.insert(0, _HERE)
+from i18n import tr
+
 console = Console()
 
 
@@ -73,15 +79,15 @@ def format_stats(db_data):
     # Character panel
     char_lines = []
     char_lines.append(f"🧙 [bold white]{get('name')}[/]  🧝 {get('race')}  📖 {get('character_class')}")
-    char_lines.append(f"⭐ Level {get('level')}  💰 Gold {get('gold')}  ✨ XP {get('xp')}")
+    char_lines.append(tr('stats.char_line2', level=get('level'), gold=get('gold'), xp=get('xp')))
     char_lines.append(f"🎭 {get('background')}  ⚖️ {get('alignment')}")
-    char_stats = Panel("\n".join(char_lines), title="⚔️ Character", border_style="red", expand=False)
+    char_stats = Panel("\n".join(char_lines), title=tr('stats.char'), border_style="red", expand=False)
 
     # Combat panel
     combat_lines = []
-    combat_lines.append(f"❤️ {hp_cur}/{hp_max} HP  🛡️ AC {ac}  🏃 Speed {speed}")
-    combat_lines.append(f"⭐ Proficiency +{prof}  🎲 Hit Dice {hd_count}d{hd_size}")
-    combat_panel = Panel("\n".join(combat_lines), title="🛡️ Combat", border_style="blue", expand=False)
+    combat_lines.append(tr('stats.combat_line1', hp_cur=hp_cur, hp_max=hp_max, ac=ac, speed=speed))
+    combat_lines.append(tr('stats.combat_line2', prof=prof, hd_count=hd_count, hd_size=hd_size))
+    combat_panel = Panel("\n".join(combat_lines), title=tr('stats.combat'), border_style="blue", expand=False)
 
     # Stats panel
     stats_data = get('stats')
@@ -92,7 +98,7 @@ def format_stats(db_data):
         stats_lines.append(f"👁️ WIS {stats_data.get('wis', '?')} ({_stat_modifier(stats_data.get('wis', 10))})    ✨ CHA {stats_data.get('cha', '?')} ({_stat_modifier(stats_data.get('cha', 10))})")
     else:
         stats_lines.append(str(stats_data))
-    stats_panel = Panel("\n".join(stats_lines), title="📊 Stats", border_style="green", expand=False)
+    stats_panel = Panel("\n".join(stats_lines), title=tr('stats.stats'), border_style="green", expand=False)
 
     panels = [char_stats, combat_panel, stats_panel]
 
@@ -100,51 +106,51 @@ def format_stats(db_data):
     spell_data = get('spellcasting')
     if isinstance(spell_data, dict):
         spell_lines = []
-        spell_lines.append(f"🔮 {spell_data.get('ability', '?').capitalize()}  📿 DC {spell_data.get('dc', '?')}  🪄 Attack +{spell_data.get('attack_modifier', '?')}")
+        spell_lines.append(tr('stats.spell_line1', ability=spell_data.get('ability', '?').capitalize(), dc=spell_data.get('dc', '?'), atk=spell_data.get('attack_modifier', '?')))
         cantrips = spell_data.get('cantrips', [])
         if cantrips:
             spell_lines.append(f"✋ {', '.join(str(c) for c in cantrips)}")
         spells_known = spell_data.get('spells_known', [])
         if spells_known:
-            spell_lines.append(f"📜 Known: {', '.join(str(s) for s in spells_known)}")
+            spell_lines.append(f"📜 {tr('stats.known')} {', '.join(str(s) for s in spells_known)}")
         spells_prepared = spell_data.get('spells_prepared', [])
         if spells_prepared:
-            spell_lines.append(f"📖 Prepared: {', '.join(str(s) for s in spells_prepared)}")
+            spell_lines.append(f"📖 {tr('stats.prepared')} {', '.join(str(s) for s in spells_prepared)}")
         spellbook = spell_data.get('spellbook', [])
         if spellbook:
-            spell_lines.append(f"📕 Spellbook: {', '.join(str(s) for s in spellbook)}")
+            spell_lines.append(f"📕 {tr('stats.spellbook')} {', '.join(str(s) for s in spellbook)}")
         slots = spell_data.get('slots', {})
         if slots:
             slot_parts = [f"Lv{k}: {v}" for k, v in slots.items()]
             spell_lines.append(f"🔥 {' | '.join(slot_parts)}")
-        panels.append(Panel("\n".join(spell_lines), title="🔮 Spellcasting", border_style="magenta", expand=False))
+        panels.append(Panel("\n".join(spell_lines), title=tr('stats.spellcasting'), border_style="magenta", expand=False))
 
     # Skills & Proficiencies panel
     prof_lines = []
     skills = get('skills')
     if isinstance(skills, list) and skills:
-        prof_lines.append(f"🎯 Skills: {', '.join(str(s) for s in skills)}")
+        prof_lines.append(f"🎯 {tr('stats.skills')} {', '.join(str(s) for s in skills)}")
     saves = get('saves')
     if isinstance(saves, list) and saves:
-        prof_lines.append(f"💫 Saves: {', '.join(str(s) for s in saves)}")
+        prof_lines.append(f"💫 {tr('stats.saves')} {', '.join(str(s) for s in saves)}")
     armor_prof = get('armor_proficiencies')
     if isinstance(armor_prof, list) and armor_prof:
-        prof_lines.append(f"🛡️ Armor: {', '.join(str(a) for a in armor_prof)}")
+        prof_lines.append(f"🛡️ {tr('stats.armor')} {', '.join(str(a) for a in armor_prof)}")
     weapon_prof = get('weapon_proficiencies')
     if isinstance(weapon_prof, list) and weapon_prof:
-        prof_lines.append(f"⚔️ Weapons: {', '.join(str(w) for w in weapon_prof)}")
+        prof_lines.append(f"⚔️ {tr('stats.weapons')} {', '.join(str(w) for w in weapon_prof)}")
     tool_prof = get('tool_proficiencies')
     if isinstance(tool_prof, list) and tool_prof:
-        prof_lines.append(f"🔧 Tools: {', '.join(str(t) for t in tool_prof)}")
+        prof_lines.append(f"🔧 {tr('stats.tools')} {', '.join(str(t) for t in tool_prof)}")
     features = get('features')
     if isinstance(features, list) and features:
-        prof_lines.append(f"🌟 Features: {', '.join(str(f) for f in features)}")
+        prof_lines.append(f"🌟 {tr('stats.features')} {', '.join(str(f) for f in features)}")
     languages = get('languages')
     if isinstance(languages, list) and languages:
-        prof_lines.append(f"🗣️ Languages: {', '.join(str(l) for l in languages)}")
+        prof_lines.append(f"🗣️ {tr('stats.languages')} {', '.join(str(l) for l in languages)}")
 
     if prof_lines:
-        panels.append(Panel("\n".join(prof_lines), title="🎯 Skills & Proficiencies", border_style="yellow", expand=False))
+        panels.append(Panel("\n".join(prof_lines), title=tr('stats.profs'), border_style="yellow", expand=False))
 
     # Inventory & Consumables panel
     inv_lines = []
@@ -158,7 +164,7 @@ def format_stats(db_data):
             inv_lines.append(f"  🧪 [bold white]{name}[/]: {qty}")
 
     if inv_lines:
-        panels.append(Panel("\n".join(inv_lines), title="🎒 Inventory & Consumables", border_style="cyan", expand=False))
+        panels.append(Panel("\n".join(inv_lines), title=tr('stats.inventory'), border_style="cyan", expand=False))
 
     reputation = get('reputation')
     if isinstance(reputation, dict):
@@ -177,7 +183,7 @@ def format_stats(db_data):
                             else:
                                 rep_lines.append(f"     {entry}")
         if rep_lines:
-            panels.append(Panel("\n".join(rep_lines), title="🏆 Reputation", border_style="yellow", expand=False))
+            panels.append(Panel("\n".join(rep_lines), title=tr('stats.reputation'), border_style="yellow", expand=False))
 
     active_effects = get('active_effects')
     buff_data = get('_active_buff_data')
@@ -201,6 +207,6 @@ def format_stats(db_data):
                     buff_lines.append(f"     {e}")
             else:
                 buff_lines.append(f"  ✨ [bold white]{spell_name}[/]")
-        panels.append(Panel("\n".join(buff_lines), title="🌀 Active Effects", border_style="bright_magenta", expand=False))
+        panels.append(Panel("\n".join(buff_lines), title=tr('stats.effects'), border_style="bright_magenta", expand=False))
 
     return panels

@@ -14,6 +14,8 @@ from google.genai import errors as genai_errors
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+import i18n
+from i18n import tr
 from game_engine import run_game, console
 
 GM_MODELS = [
@@ -45,14 +47,14 @@ async def select_model(input_session, models, title):
     for i, model in enumerate(models):
         console.print(f"[cyan]{i+1}[/cyan] {model}")
 
-    choice = await input_session.prompt_async(HTML('<ansicyan><b>Select a model (number)</b></ansicyan> '))
+    choice = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("entry.select_model")}</b></ansicyan> '))
     try:
         idx = int(choice) - 1
         selected_model = models[idx]
-        console.print(Panel(f"[bold green]Model selected:[/bold green] {selected_model}", border_style="green"))
+        console.print(Panel(f"[bold green]{tr('entry.model_selected')}[/bold green] {selected_model}", border_style="green"))
         return selected_model
     except (ValueError, IndexError):
-        console.print("[red]Invalid selection. Defaulting to first model.[/red]")
+        console.print(f"[red]{tr('entry.invalid_model')}[/red]")
         return models[0]
 
 
@@ -435,10 +437,11 @@ def create_image_gen_fn(api_key, image_model, debug=False):
 
 
 async def main():
+    i18n.load_saved()
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
-        console.print("[bold red]Error:[/bold red] GEMINI_API_KEY environment variable not set.")
-        console.print("[yellow]Set it with: export GEMINI_API_KEY=your-api-key[/yellow]")
+        console.print(f"[bold red]{tr('err.prefix')}[/bold red] {tr('entry.apikey_missing', key='GEMINI_API_KEY')}")
+        console.print(f"[yellow]{tr('entry.apikey_hint', key='GEMINI_API_KEY')}[/yellow]")
         sys.exit(1)
 
     args = parse_args()
@@ -447,8 +450,8 @@ async def main():
 
     input_session = PromptSession()
 
-    gm_model = await select_model(input_session, GM_MODELS, "Infinity Project: GameMaster Model Selection (Nano Banana)")
-    image_model = await select_model(input_session, IMAGE_MODELS, "Infinity Project: Image Generation Model Selection (Nano Banana)")
+    gm_model = await select_model(input_session, GM_MODELS, tr('nano.gm_title'))
+    image_model = await select_model(input_session, IMAGE_MODELS, tr('nano.img_title'))
 
     context_window = MODEL_CONTEXT_LENGTHS.get(gm_model, 1048576)
     if verbose:
@@ -465,7 +468,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted by user. Exiting...[/yellow]")
+        console.print(f"\n[yellow]{tr('entry.interrupted')}[/yellow]")
         sys.exit(0)
     except SystemExit as e:
         sys.exit(e.code)

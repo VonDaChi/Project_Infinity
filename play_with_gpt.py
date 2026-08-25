@@ -13,6 +13,8 @@ from openai import AsyncOpenAI, APIStatusError
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+import i18n
+from i18n import tr
 from game_engine import run_game, console
 
 AVAILABLE_MODELS = [
@@ -46,19 +48,19 @@ def parse_args():
 
 
 async def select_model(input_session):
-    console.print(Panel("[bold magenta] Infinity Project: LLM Selection (OpenAI) [/bold magenta]", expand=False))
+    console.print(Panel(f"[bold magenta]{tr('entry.llm_title', suffix=' (OpenAI)')}[/bold magenta]", expand=False))
     for i, model in enumerate(AVAILABLE_MODELS):
         tag = "[dim]\\[Responses][/dim]" if model in RESPONSES_API_MODELS else "[dim]\\[Legacy][/dim]"
         console.print(f"[cyan]{i+1}[/cyan] {model} {tag}")
 
-    choice = await input_session.prompt_async(HTML('<ansicyan><b>Select a model (number)</b></ansicyan> '))
+    choice = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("entry.select_model")}</b></ansicyan> '))
     try:
         idx = int(choice) - 1
         selected_model = AVAILABLE_MODELS[idx]
-        console.print(Panel(f"[bold green]Model selected:[/bold green] {selected_model}", border_style="green"))
+        console.print(Panel(f"[bold green]{tr('entry.model_selected')}[/bold green] {selected_model}", border_style="green"))
         return selected_model
     except (ValueError, IndexError):
-        console.print("[red]Invalid selection. Defaulting to first model.[/red]")
+        console.print(f"[red]{tr('entry.invalid_model')}[/red]")
         return AVAILABLE_MODELS[0]
 
 
@@ -469,10 +471,11 @@ def create_gpt_chat_fn(api_key, debug=False, thinking_level=None, temperature=DE
 
 
 async def main():
+    i18n.load_saved()
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
-        console.print("[bold red]Error:[/bold red] OPENAI_API_KEY environment variable not set.")
-        console.print("[yellow]Set it with: export OPENAI_API_KEY=your-api-key[/yellow]")
+        console.print(f"[bold red]{tr('err.prefix')}[/bold red] {tr('entry.apikey_missing', key='OPENAI_API_KEY')}")
+        console.print(f"[yellow]{tr('entry.apikey_hint', key='OPENAI_API_KEY')}[/yellow]")
         sys.exit(1)
 
     args = parse_args()
@@ -503,7 +506,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        console.print("\n[yellow]Interrupted by user. Exiting...[/yellow]")
+        console.print(f"\n[yellow]{tr('entry.interrupted')}[/yellow]")
         sys.exit(0)
     except SystemExit as e:
         sys.exit(e.code)

@@ -44,6 +44,8 @@ from openai import AsyncOpenAI, APIStatusError
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+import i18n
+from i18n import tr
 from game_engine import run_game, console
 
 # ── KoboldCpp configuration ──────────────────────────────────────
@@ -340,6 +342,7 @@ def create_kobold_chat_fn(base_url, api_key, model, context_window,
 
 
 async def main():
+    i18n.load_saved()
     args = parse_args()
     debug = args.debug
     verbose = args.verbose or args.debug
@@ -357,19 +360,14 @@ async def main():
         else:
             context_window = FALLBACK_CONTEXT_WINDOW
             ctx_source = "fallback"
-    ctx_label = {
-        "override": "override",
-        "backend": "from KoboldCpp backend",
-        "fallback": "backend 不可达，回退默认",
-    }.get(ctx_source, ctx_source)
+    ctx_label = tr(f'kobold.ctx.{ctx_source}')
     if verbose:
         console.print(f"[dim]Context window: {context_window:,} tokens ({ctx_label})[/dim]")
 
     console.print(Panel(
         f"[bold cyan]Project Infinity × KoboldCpp[/bold cyan]\n"
         f"[dim]Base URL: {args.base_url}\n"
-        f"[dim]Model: {model}  |  Context: {context_window:,} tokens ({ctx_label})  |  "
-        f"max_output: {args.max_output_tokens}[/dim]",
+        f"[dim]{tr('kobold.panel', model=model, ctx=f'{context_window:,}', ctx_label=ctx_label, max_out=args.max_output_tokens)}[/dim]",
         expand=False
     ))
 
@@ -401,6 +399,6 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        console.print("\n[dim]Goodbye.[/dim]")
+        console.print(f"\n[dim]{tr('entry.goodbye')}[/dim]")
     except SystemExit as e:
         sys.exit(e.code)

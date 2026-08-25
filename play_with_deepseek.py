@@ -21,6 +21,8 @@ from openai import AsyncOpenAI, APIStatusError
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
+import i18n
+from i18n import tr
 from game_engine import run_game, console
 
 # ── DeepSeek configuration ─────────────────────────────────────
@@ -276,9 +278,10 @@ def create_deepseek_chat_fn(api_key, debug=False, think=False, temperature=DEFAU
 
 
 async def main():
+    i18n.load_saved()
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
-        console.print("[bold red]Error:[/bold red] DEEPSEEK_API_KEY not set.")
+        console.print(f"[bold red]{tr('err.prefix')}[/bold red] {tr('entry.apikey_missing', key='DEEPSEEK_API_KEY')}")
         console.print("[yellow]PowerShell: $env:DEEPSEEK_API_KEY=\"sk-your-key\"[/yellow]")
         console.print("[yellow]Bash:      export DEEPSEEK_API_KEY=\"sk-your-key\"[/yellow]")
         sys.exit(1)
@@ -292,8 +295,7 @@ async def main():
 
     console.print(Panel(
         f"[bold cyan]Project Infinity × DeepSeek[/bold cyan]\n"
-        f"[dim]Model: {model}  |  Context: {context_window:,} tokens  |  "
-        f"api.deepseek.com[/dim]",
+        f"[dim]{tr('deepseek.panel', model=model, ctx=f'{context_window:,}')}[/dim]",
         expand=False
     ))
 
@@ -311,4 +313,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        console.print("\n[dim]Goodbye.[/dim]")
+        console.print(f"\n[dim]{tr('entry.goodbye')}[/dim]")

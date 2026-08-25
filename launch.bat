@@ -39,12 +39,14 @@ echo   4) DeepSeek      (play_with_deepseek.py, 需 DEEPSEEK_API_KEY)
 echo   5) OpenAI        (play_with_gpt.py, 需 OPENAI_API_KEY)
 echo   6) Gemini        (play_with_gemini.py, 需 GEMINI_API_KEY)
 echo   7) Claude        (play_with_claude.py, 需 ANTHROPIC_API_KEY)
+echo   L) 语言 / Language
 echo   Q) 退出
 echo ============================================================
 set "CHOICE="
-set /p CHOICE=请输入序号 [1-7 / Q]：
+set /p CHOICE=请输入序号 [1-7 / L / Q]：
 
 if /i "%CHOICE%"=="Q" exit /b 0
+if /i "%CHOICE%"=="L" goto :lang
 if "%CHOICE%"=="1" goto :forge
 if "%CHOICE%"=="2" goto :ollama
 if "%CHOICE%"=="3" goto :kobold
@@ -145,6 +147,18 @@ if "!ANTHROPIC_API_KEY!"=="" (
 )
 "%PYEXE%" "%ROOT%play_with_claude.py"
 goto :end
+
+REM --- 语言切换（写入 config/settings.yml，游戏启动时读取） --------------------
+:lang
+echo.
+echo   1) English
+echo   2) 中文 (Chinese)
+set "LC="
+set /p LC=选择语言 / Select language [1-2]：
+if "%LC%"=="2" "%PYEXE%" -c "import sys;sys.path.insert(0,r'%ROOT%.');import i18n;i18n.set_lang('zh');print('已切换为中文，下次启动游戏生效。')"
+if "%LC%"=="1" "%PYEXE%" -c "import sys;sys.path.insert(0,r'%ROOT%.');import i18n;i18n.set_lang('en');print('Switched to English.')"
+pause
+goto :menu
 
 :end
 echo.
