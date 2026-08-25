@@ -102,6 +102,10 @@ console = Console()
 VERBOSE = False
 DEBUG = False
 DEBUG_LOG = None
+# When True, each round-end auto-save also calls os.fsync() to survive a power
+# loss (not just a process kill). Off by default: fsync is a real disk wait and
+# per-write flush() already covers the "closed the window" case the user hit.
+DEBUG_FSYNC = False
 
 
 class DebugLogger:
@@ -123,6 +127,10 @@ class DebugLogger:
     def _write(self, text):
         try:
             self._f.write(text + "\n")
+            # Flush on every write so the log is observable in real time and
+            # survives an abrupt termination (e.g. killing the window) instead
+            # of being stuck in the OS file buffer until close().
+            self._f.flush()
         except Exception:
             pass
 
@@ -143,6 +151,23 @@ class DebugLogger:
         try:
             self._write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] === SESSION END ===")
             self._f.close()
+        except Exception:
+            pass
+
+    def save(self):
+        """Persist everything logged so far (round-end auto-save).
+
+        Called at the end of every conversation round and after slash commands,
+        so a session that ends by closing the window still keeps the latest log
+        without relying on the ``/quit`` command. Per-write flush() already
+        pushes each line to disk; this adds an optional fsync for power-loss
+        protection and a marker line for easy verification.
+        """
+        try:
+            ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._write(f"[{ts}] === AUTO-SAVE (round end) ===")
+            if DEBUG_FSYNC:
+                os.fsync(self._f.fileno())
         except Exception:
             pass
 
@@ -601,6 +626,8 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     if user_input.startswith('/'):
                         dbg("COMMAND", user_input)
                         result = await handle_slash_command(user_input)
+                        if DEBUG_LOG is not None:
+                            DEBUG_LOG.save()
                         if result == 'quit':
                             console.print(f"[yellow]{tr('quit.goodbye')}[/yellow]")
                             break
@@ -671,6 +698,11 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 if VERBOSE:
                                     console.print(f"[dim]⚠️ Timeline checkpoint failed: {e}[/dim]")
 
+                    # Round-end auto-save (debug mode): persist the log now so
+                    # that closing the window - not just /quit - keeps the
+                    # latest round. See DebugLogger.save().
+                    if DEBUG_LOG is not None:
+                        DEBUG_LOG.save()
 
     except KeyboardInterrupt:
         console.print(f"\n[yellow]{tr('game.bye')}[/yellow]")
