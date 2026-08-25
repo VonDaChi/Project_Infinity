@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import asyncio
+import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.padding import Padding
@@ -100,6 +101,56 @@ def append_timeline_file(timeline_path, entry):
 console = Console()
 VERBOSE = False
 DEBUG = False
+DEBUG_LOG = None
+
+
+class DebugLogger:
+    """Writes a detailed, human-readable trace of a debug session to a file.
+
+    Activated only when --debug is passed. Every write uses UTF-8 (consistent
+    with the rest of the project) and is best-effort: a failing write never
+    disrupts gameplay.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._f = open(path, "w", encoding="utf-8")
+        self._write("=== Project Infinity Debug Log ===")
+        self._write(f"Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self._write(f"File:    {path}")
+        self._write("")
+
+    def _write(self, text):
+        try:
+            self._f.write(text + "\n")
+        except Exception:
+            pass
+
+    def log(self, section, payload):
+        ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._write(f"[{ts}] === {section} ===")
+        if isinstance(payload, (dict, list)):
+            try:
+                text = json.dumps(payload, ensure_ascii=False, indent=2)
+            except (TypeError, ValueError):
+                text = str(payload)
+        else:
+            text = str(payload)
+        self._write(text)
+        self._write("")
+
+    def close(self):
+        try:
+            self._write(f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] === SESSION END ===")
+            self._f.close()
+        except Exception:
+            pass
+
+
+def dbg(section, payload):
+    """Emit a debug log entry if debug logging is active (no-op otherwise)."""
+    if DEBUG_LOG is not None:
+        DEBUG_LOG.log(section, payload)
 
 
 def get_wwf_files():
@@ -166,6 +217,27 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
 
     player_path = os.path.splitext(wwf_path)[0] + ".player"
     timeline_path = os.path.splitext(wwf_path)[0] + ".timeline.md"
+
+    # ── Debug logging setup (--debug) ─────────────────────────────
+    # All interaction/output is recorded to a per-session log file in output/.
+    global DEBUG_LOG
+    DEBUG_LOG = None
+    if debug:
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        stem = os.path.splitext(os.path.basename(wwf_path))[0]
+        log_path = os.path.join(OUTPUT_DIR, f"{stem}_debug_{ts}.log")
+        DEBUG_LOG = DebugLogger(log_path)
+        dbg("SESSION START", {
+            "model": model,
+            "context_window": context_window,
+            "wwf": wwf_path,
+            "player": player_path,
+            "timeline": timeline_path,
+            "verbose": verbose,
+            "debug": debug,
+            "log_file": log_path,
+        })
+        console.print(f"[dim]Debug log: {log_path}[/dim]")
 
     with open(LOCK_FILE, "r", encoding="utf-8") as f:
         lock_content = f.read()
@@ -240,6 +312,8 @@ Refer to them when the player asks about past events. Do not replay or re-descri
 
                         current_context_tokens = response.get('prompt_eval_count', current_context_tokens)
 
+                        dbg("AI RESPONSE", response)
+
                         if DEBUG:
                             console.print(f"[dim]DEBUG RESPONSE: {response}[/dim]")
                             if response.get('thinking'):
@@ -250,6 +324,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 ))
 
                         if response.get('malformed_function_call'):
+                            dbg("GM OUTPUT (malformed)", tr('gm.malformed'))
                             return tr('gm.malformed')
 
                         response_msg = response['message']
@@ -271,6 +346,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             thinking_retries += 1
                             if DEBUG:
                                 console.print(f"[bold yellow]DEBUG: Thinking-only response. Injecting 'Continue'... ({thinking_retries}/{MAX_THINKING_RETRIES})[/bold yellow]")
+                            dbg("RETRY (thinking-only)", f"Injecting 'Continue' ({thinking_retries}/{MAX_THINKING_RETRIES})")
                             messages.append({"role": "user", "content": "Continue"})
                             response = await chat_fn(
                                 messages=messages,
@@ -299,6 +375,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             })
 
                         if response.get('thinking_only') and thinking_retries >= MAX_THINKING_RETRIES:
+                            dbg("GM OUTPUT (deep thought)", tr('gm.deep_thought'))
                             return tr('gm.deep_thought')
 
                         tool_calls_list = response_msg.get('tool_calls')
@@ -310,7 +387,14 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 if VERBOSE:
                                     console.print(f"[dim]🔧 Tool: {tool_name}({tool_args})[/dim]")
 
+                                dbg("TOOL CALL →", {"name": tool_name, "arguments": tool_args})
+
                                 result = await session.call_tool(tool_name, arguments=tool_args)
+
+                                tool_result_text = "\n".join(
+                                    block.text for block in result.content if hasattr(block, "text")
+                                )
+                                dbg("TOOL RESULT ←", tool_result_text)
 
                                 if VERBOSE:
                                     console.print(f"[dim]   → {result.content}[/dim]")
@@ -327,8 +411,10 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         if any(token in (content or "") for token in ["{{_NEED_AN_OTHER_PROMPT}}", "{{_NEED_ANOTHER_PROMPT}}"]):
                             if DEBUG:
                                 console.print("[bold yellow]DEBUG: Checkpoint token detected. Pausing...[/bold yellow]")
+                            dbg("CHECKPOINT", "{{_NEED_AN_OTHER_PROMPT}} detected — pausing for resume token")
                             return "__SYSTEM_PAUSE__"
 
+                        dbg("GM OUTPUT", content)
                         return content
 
                 async def _auto_generate_image(narrative_text):
@@ -479,6 +565,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                 while response_text == "__SYSTEM_PAUSE__":
                     if DEBUG:
                         console.print("[bold cyan]DEBUG: Injecting Resume Token ({{_CONTINUE_EXECUTION}})[/bold cyan]")
+                    dbg("RESUME", "Injected {{_CONTINUE_EXECUTION}}")
                     if VERBOSE:
                         response_text = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
                     else:
@@ -509,7 +596,10 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     if not user_input:
                         continue
 
+                    dbg("USER INPUT", user_input)
+
                     if user_input.startswith('/'):
+                        dbg("COMMAND", user_input)
                         result = await handle_slash_command(user_input)
                         if result == 'quit':
                             console.print(f"[yellow]{tr('quit.goodbye')}[/yellow]")
@@ -526,12 +616,14 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         console.print(f"\n[yellow]{tr('game.interrupted')}[/yellow]")
                         continue
                     except Exception as e:
+                        dbg("GM ERROR", str(e))
                         console.print(f"[bold red]{tr('gm.error', e=e)}[/bold red]")
                         continue
 
                     while gm_response == "__SYSTEM_PAUSE__":
                         if DEBUG:
                             console.print("[bold cyan]DEBUG: Injecting Resume Token ({{_CONTINUE_EXECUTION}})[/bold cyan]")
+                        dbg("RESUME", "Injected {{_CONTINUE_EXECUTION}}")
                         if VERBOSE:
                             gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
                         else:
@@ -569,11 +661,13 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                     entry = tl_response.replace("{{_NEED_AN_OTHER_PROMPT}}", "").replace("{{_NEED_ANOTHER_PROMPT}}", "").strip()
                                     if entry and "**Key Events**" in entry:
                                         append_timeline_file(timeline_path, entry)
+                                        dbg("TIMELINE ENTRY", entry)
                                         if VERBOSE:
                                             console.print(f"[dim]✅ Timeline saved ({len(entry)} chars)[/dim]")
                                     elif VERBOSE:
                                         console.print(f"[dim]⚠️ Timeline entry missing Key Events — skipped[/dim]")
                             except Exception as e:
+                                dbg("TIMELINE ERROR", str(e))
                                 if VERBOSE:
                                     console.print(f"[dim]⚠️ Timeline checkpoint failed: {e}[/dim]")
 
@@ -585,3 +679,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
         traceback.print_exc()
         console.print(f"\n[bold red]{tr('game.fatal', e=e)}[/bold red]")
         console.print(f"[dim]{tr('game.ended')}[/dim]")
+    finally:
+        if DEBUG_LOG is not None:
+            dbg("SESSION END", {"reason": "see log above"})
+            DEBUG_LOG.close()

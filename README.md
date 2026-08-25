@@ -359,6 +359,24 @@ When the game is running with `--debug`, the engine logs:
 - AI thinking/reasoning panels (when available)
 - Automatic retry messages for empty or malformed responses
 
+In addition to the console output above, `--debug` writes a **detailed, persistent trace to a log file** in the `output/` directory:
+
+```
+output/<character>_debug_<YYYYMMDD_HHMMSS>.log
+```
+
+The log captures the full front-end ↔ back-end interaction and all game output, including:
+
+- **AI RESPONSE** — the complete raw model response (content, tool calls, thinking)
+- **TOOL CALL → / TOOL RESULT ←** — every MCP tool request sent to the engine and its result returned
+- **GM OUTPUT** — the narrative text delivered to the player
+- **USER INPUT / COMMAND** — what you typed (including `/` commands)
+- **CHECKPOINT / RESUME** — the `{{_NEED_AN_OTHER_PROMPT}}` and `{{_CONTINUE_EXECUTION}}` protocol tokens
+- **TIMELINE ENTRY** — session timeline checkpoints
+- **RETRY / ERROR** — thinking-only retries, communication errors, and timeline failures
+
+A new log file is created for every session (named by the world/character and timestamp), so you can inspect any past run. The log is UTF-8 plain text, safe to open in any editor. Debug logging is **off by default** and only activates when you pass `--debug`.
+
 ---
 
 ## Known Issues
