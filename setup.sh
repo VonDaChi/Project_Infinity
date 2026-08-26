@@ -3,8 +3,8 @@
 #  Project Infinity — Portable (Standalone) Python Setup for Linux
 #  思路与 setup.bat 一致：把一份自带的 CPython 装进 python_embeded/，
 #  只是 Windows 用官方 embedded zip，Linux 用 python-build-standalone
-#  （indygreg 出品，uv/rye 同款预编译构建，自带 pip、静态链接、免系统依赖）。
-#  下载优先走国内镜像（ghproxy），不可达时回退官方源。
+#  （indygreg 出品、现托管于 astral-sh，uv/rye 同款预编译构建，自带 pip、
+#   静态链接、免系统依赖）。下载优先走国内镜像（ghproxy），不可达时回退官方源。
 # ===========================================================================
 
 set -uo pipefail
@@ -13,6 +13,22 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYDIR="$ROOT/python_embeded"
 PYEXE="$PYDIR/bin/python3"
 REQ="$ROOT/requirements.txt"
+
+# --- 守卫：禁止在 Windows 挂载的文件系统（WSL /mnt、NTFS/FAT 等）上运行 --------
+# 说明：Windows 与 Linux 各自拥有独立的 python_embeded/（已 gitignore）。若在 WSL 里
+# 通过 /mnt/c 访问 Windows 上的项目目录运行，会把 Linux 的 Python 写进 Windows 的
+# python_embeded/，触发 symlink 错误并污染 Windows 环境。本脚本仅允许在真正的本机
+# Linux 文件系统（ext4 等）上运行。判定依据为文件系统类型（覆盖 WSL drvfs/9p 以及
+# 真实 Linux 上直接挂载的 NTFS/FAT），避免误判原生 ext4/btrfs/overlay 等。
+_PI_FSTYPE="$(stat -f -c '%T' "$ROOT" 2>/dev/null)"
+case "$_PI_FSTYPE" in
+  v9fs|9p|drvfs|ntfs|vfat|exfat|fuseblk|fuse.ntfs|fusectl)
+    echo "[中止] 检测到在 Windows 挂载的文件系统 ($_PI_FSTYPE) 上运行。"
+    echo "       为避免污染 Windows 的 python_embeded/，请勿在 WSL 中通过 /mnt 访问"
+    echo "       Windows 项目目录来运行本脚本；请在本机 Linux 文件系统（如"
+    echo "       ~/Project_Infinity，ext4）中 clone 本项目后，再运行 setup.sh。"
+    exit 1;;
+esac
 
 # --- 镜像 / 官方源配置（集中管理，便于更换） ---------------------------------
 PBS_OWNER="indygreg"
@@ -34,12 +50,12 @@ TMP_ZIP="$ROOT/$TARBALL"
 PIP_MIRROR="https://pypi.tuna.tsinghua.edu.cn/simple"
 PIP_OFFICIAL="https://pypi.org/simple"
 
-# 下载源列表（镜像优先，官方最后）
+# 下载源列表：astral-sh 为主（indygreg 已重定向至此），ghproxy 镜像优先，indygreg 兜底
 SRC_LIST=(
-  "https://mirror.ghproxy.com/https://github.com/${PBS_OWNER}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
-  "https://ghproxy.net/https://github.com/${PBS_OWNER}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
-  "https://github.com/${PBS_OWNER}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
   "https://github.com/${PBS_OWNER2}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
+  "https://mirror.ghproxy.com/https://github.com/${PBS_OWNER2}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
+  "https://ghproxy.net/https://github.com/${PBS_OWNER2}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
+  "https://github.com/${PBS_OWNER}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
 )
 
 echo
@@ -94,25 +110,27 @@ if [ "$download_ok" -ne 1 ]; then
 fi
 echo "      [OK] 已下载到 $TMP_ZIP"
 
-# --- 2. 解压到 python_embeded/（兼容 python/ 与 python/install/ 两种布局） ---
+# --- 2. 解压到 python_embeded/（install_only 压缩包顶层为 python/，剥离一层即可） ---
 echo "[2/4] 解压到 $PYDIR ..."
-STAGE="$(mktemp -d)"
-if ! tar -xzf "$TMP_ZIP" -C "$STAGE" 2>/dev/null; then
-  echo "[错误] 解压失败。"
-  rm -rf "$STAGE" "$TMP_ZIP"
-  goto_download_fail
-fi
-# 找到真正的 bin/python3，将其所在前缀复制到 PYDIR
-PYBIN="$(find "$STAGE" -type f -path '*/bin/python3*' 2>/dev/null | head -1)"
-if [ -z "$PYBIN" ]; then
-  echo "[错误] 压缩包内未找到 bin/python3。"
-  rm -rf "$STAGE" "$TMP_ZIP"
-  goto_download_fail
-fi
-PYPREFIX="$(dirname "$(dirname "$PYBIN")")"
 mkdir -p "$PYDIR"
-cp -a "$PYPREFIX/." "$PYDIR"/
-rm -rf "$STAGE"
+if ! tar -xzf "$TMP_ZIP" -C "$PYDIR" --strip-components=1 2>/dev/null; then
+  echo "[错误] 解压失败。"
+  rm -rf "$PYDIR"/{bin,lib,include,share} "$TMP_ZIP"
+  goto_download_fail
+fi
+# 兼容极少数 python/install/ 布局：若未找到 python3，则定位并平移
+if [ ! -x "$PYEXE" ]; then
+  PYBIN="$(find "$PYDIR" -type f -path '*/bin/python3*' 2>/dev/null | head -1)"
+  if [ -n "$PYBIN" ]; then
+    PYPREFIX="$(dirname "$(dirname "$PYBIN")")"
+    cp -a "$PYPREFIX/." "$PYDIR"/ 2>/dev/null
+  fi
+fi
+if [ ! -x "$PYEXE" ]; then
+  echo "[错误] 解压后未找到 $PYEXE"
+  rm -f "$TMP_ZIP"
+  goto_download_fail
+fi
 rm -f "$TMP_ZIP"
 
 if [ ! -x "$PYEXE" ]; then
@@ -157,8 +175,8 @@ goto_download_fail() {
   echo " 可能原因：当前环境无外网访问，或镜像/官方源均不可达。"
   echo
   echo " 手动恢复步骤 (Manual recovery):"
-  echo "   [1] 用浏览器下载对应 tarball："
-  echo "       https://github.com/${PBS_OWNER}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
+  echo "   [1] 用浏览器下载对应 tarball（indygreg 已重定向至 astral-sh）："
+  echo "       https://github.com/${PBS_OWNER2}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
   echo "   [2] 解压并把内容放入本目录的 python_embeded/ 下（使其含 bin/python3）"
   echo "   [3] 进入 python_embeded/ 所在目录，运行："
   echo "       python_embeded/bin/python3 -m pip install -r requirements.txt -i ${PIP_MIRROR}"

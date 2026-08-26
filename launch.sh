@@ -9,6 +9,22 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYEXE="$ROOT/python_embeded/bin/python3"
 
+# --- 守卫：禁止在 Windows 挂载的文件系统（WSL /mnt、NTFS/FAT 等）上运行 --------
+# 说明：Windows 与 Linux 各自拥有独立的 python_embeded/（已 gitignore）。若在 WSL 里
+# 通过 /mnt/c 访问 Windows 上的项目目录运行，会把 Linux 的 Python 写进 Windows 的
+# python_embeded/，触发 symlink 错误并污染 Windows 环境。本脚本仅允许在真正的本机
+# Linux 文件系统（ext4 等）上运行。判定依据为文件系统类型（覆盖 WSL drvfs/9p 以及
+# 真实 Linux 上直接挂载的 NTFS/FAT），避免误判原生 ext4/btrfs/overlay 等。
+_PI_FSTYPE="$(stat -f -c '%T' "$ROOT" 2>/dev/null)"
+case "$_PI_FSTYPE" in
+  v9fs|9p|drvfs|ntfs|vfat|exfat|fuseblk|fuse.ntfs|fusectl)
+    echo "[中止] 检测到在 Windows 挂载的文件系统 ($_PI_FSTYPE) 上运行。"
+    echo "       为避免污染 Windows 的 python_embeded/，请勿在 WSL 中通过 /mnt 访问"
+    echo "       Windows 项目目录来运行本脚本；请在本机 Linux 文件系统（如"
+    echo "       ~/Project_Infinity，ext4）中 clone 本项目后，再运行 launch.sh。"
+    exit 1;;
+esac
+
 echo
 echo "============================================================"
 echo " Project Infinity 启动器 (Linux)"
