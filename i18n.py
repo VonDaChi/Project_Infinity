@@ -85,6 +85,8 @@ _STRINGS = {
     "gm.thinking":     {"en": "GM is thinking...", "zh": "GM 思考中……"},
     "gm.awakens":      {"en": "The Game Master Awakens", "zh": "游戏主持人降临"},
     "gm.title":        {"en": "Game Master", "zh": "游戏主持人"},
+    "gm.resume_fallback": {"en": "The GM is still gathering its thoughts…",
+                           "zh": "GM 仍在整理思绪……"},
     "gm.error":        {"en": "Error communicating with GM: {e}",
                         "zh": "与 GM 通信出错：{e}"},
     "help.title":      {"en": "Help", "zh": "帮助"},

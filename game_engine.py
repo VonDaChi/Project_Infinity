@@ -27,6 +27,32 @@ LOCK_FILE = os.path.join(_HERE, "GameMaster_MCP.md")
 OUTPUT_DIR = os.path.join(_HERE, "output")
 TIMELINE_INTERVAL = 5  # rounds between timeline snapshots
 
+# ── GM pause / checkpoint protocol tokens ─────────────────────────────────────
+# 这些是协议控制 token，必须保持英文原样，禁止翻译（不传入 tr()）。
+# 两种拼写等效；仅当回复"独立出现"（去空白后恰好等于 token）才视为暂停信号，
+# 内联出现在剧情中的 token 一律剥离后当作正常剧情。
+PAUSE_TOKENS = ("{{_NEED_AN_OTHER_PROMPT}}", "{{_NEED_ANOTHER_PROMPT}}")
+MAX_RESUMES = 3  # 每个用户回合内恢复循环的安全上限（fix B）
+
+
+def _is_pure_pause_token(text):
+    """仅当 text 去掉首尾空白后「恰好等于」某个 token（独立出现）才算暂停。
+    内联出现在剧情中的 token 不算暂停。"""
+    if not text:
+        return False
+    return text.strip() in PAUSE_TOKENS
+
+
+def _strip_pause_tokens(text):
+    """剥离所有 pause token，返回去空白后的文本；token 绝不泄漏到历史/渲染/时间线。"""
+    if not text:
+        return ""
+    out = text
+    for tok in PAUSE_TOKENS:
+        out = out.replace(tok, "")
+    return out.strip()
+
+
 TIMELINE_PROMPT = """SYSTEM INSTRUCTION: You have just completed several rounds of gameplay.
 Write a session timeline entry in the following EXACT format. Replace bracketed
 text with actual content. Keep it concise. Output ONLY the entry — no extra narration.
@@ -353,11 +379,25 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             return tr('gm.malformed')
 
                         response_msg = response['message']
-                        content = response_msg['content'] if response_msg else ""
+                        raw_content = response_msg['content'] if response_msg else ""
+
+                        # ── 暂停 / checkpoint token 处理（fix A）──
+                        # 仅当 content 去掉空白后「恰好等于」token（独立出现）才暂停；
+                        # 内联 token 必须剥离后当作正常剧情，且不入历史。
+                        if _is_pure_pause_token(raw_content):
+                            if DEBUG:
+                                console.print("[bold yellow]DEBUG: Checkpoint token detected. Pausing...[/bold yellow]")
+                            dbg("CHECKPOINT", "{{_NEED_AN_OTHER_PROMPT}} detected — pausing for resume token")
+                            return "__SYSTEM_PAUSE__"
+
+                        # 剥离内联 token，避免泄漏到历史 / 渲染。
+                        content = _strip_pause_tokens(raw_content)
+                        if raw_content and content != raw_content.strip():
+                            dbg("GM OUTPUT (token stripped)", content)
 
                         msg_entry = {
                             "role": "assistant",
-                            "content": content or "",
+                            "content": content,
                         }
                         if response_msg.get('tool_calls'):
                             msg_entry["tool_calls"] = response_msg['tool_calls']
@@ -389,14 +429,20 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                         border_style="yellow",
                                     ))
                             response_msg = response['message']
-                            content = response_msg['content'] if response_msg else ""
+                            _raw = response_msg['content'] if response_msg else ""
+                            if _is_pure_pause_token(_raw):
+                                if DEBUG:
+                                    console.print("[bold yellow]DEBUG: Checkpoint token detected (post-thinking). Pausing...[/bold yellow]")
+                                dbg("CHECKPOINT", "{{_NEED_AN_OTHER_PROMPT}} detected after thinking — pausing")
+                                return "__SYSTEM_PAUSE__"
+                            content = _strip_pause_tokens(_raw)
                             messages.append({
                                 "role": "assistant",
-                                "content": content or "",
+                                "content": content,
                                 "tool_calls": response_msg.get('tool_calls') or None,
                             } if response_msg.get('tool_calls') else {
                                 "role": "assistant",
-                                "content": content or "",
+                                "content": content,
                             })
 
                         if response.get('thinking_only') and thinking_retries >= MAX_THINKING_RETRIES:
@@ -432,12 +478,6 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             if DEBUG:
                                 console.print("[bold yellow]DEBUG: Tool calls executed alongside sync token. Ignoring token and continuing loop.[/bold yellow]")
                             continue
-
-                        if any(token in (content or "") for token in ["{{_NEED_AN_OTHER_PROMPT}}", "{{_NEED_ANOTHER_PROMPT}}"]):
-                            if DEBUG:
-                                console.print("[bold yellow]DEBUG: Checkpoint token detected. Pausing...[/bold yellow]")
-                            dbg("CHECKPOINT", "{{_NEED_AN_OTHER_PROMPT}} detected — pausing for resume token")
-                            return "__SYSTEM_PAUSE__"
 
                         dbg("GM OUTPUT", content)
                         return content
@@ -484,6 +524,24 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     except Exception as e:
                         if VERBOSE:
                             console.print(f"[dim]⚠️ Image generation failed: {e}. Continuing without image.[/dim]")
+
+                async def _emit_narrative(text, title):
+                    """渲染一段剧情到终端，并按段（fix C）自动生成场景图。
+                    title 传入 tr('gm.awakens')（开场）或 tr('gm.title')（常规）。
+                    图像节奏由外层 narrative_counter 控制。"""
+                    text = _strip_pause_tokens(text)
+                    if not text:
+                        return
+                    console.print(Panel(
+                        Padding(render_gm_text(text), (1, 1)),
+                        title=f"[bold magenta]{title}[/bold magenta]",
+                        border_style="magenta"
+                    ))
+                    console.print("\n")
+                    nonlocal narrative_counter
+                    narrative_counter += 1
+                    if image_gen_fn and image_frequency > 0 and narrative_counter % image_frequency == 0:
+                        await _auto_generate_image(text)
 
                 async def handle_slash_command(cmd):
                     cmd = cmd.strip().lower()
@@ -587,7 +645,15 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
                         response_text = await chat_with_tools(key_content)
 
+                # ── 恢复循环 + 安全上限（fix B）──
+                resume_count = 0
                 while response_text == "__SYSTEM_PAUSE__":
+                    resume_count += 1
+                    if resume_count > MAX_RESUMES:
+                        # 达到上限：纯暂停本身不带剧情，兜底发一条系统提示，保证界面不空白。
+                        await _emit_narrative(tr('gm.resume_fallback'), title=tr('gm.awakens'))
+                        response_text = None
+                        break
                     if DEBUG:
                         console.print("[bold cyan]DEBUG: Injecting Resume Token ({{_CONTINUE_EXECUTION}})[/bold cyan]")
                     dbg("RESUME", "Injected {{_CONTINUE_EXECUTION}}")
@@ -597,18 +663,11 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
                             response_text = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
 
-                if image_gen_fn and image_frequency > 0 and response_text and response_text != "__SYSTEM_PAUSE__":
-                    clean = response_text.replace("{{_NEED_AN_OTHER_PROMPT}}", "").replace("{{_NEED_ANOTHER_PROMPT}}", "").strip()
+                # ── 渲染该回合剧情段（fix C，已含按段图像）──
+                if response_text and response_text != "__SYSTEM_PAUSE__":
+                    clean = _strip_pause_tokens(response_text)
                     if clean:
-                        narrative_counter += 1
-                        if narrative_counter % image_frequency == 0:
-                            await _auto_generate_image(clean)
-
-                console.print(Panel(
-                    Padding(render_gm_text(response_text), (1, 1)),
-                    title=f"[bold magenta]{tr('gm.awakens')}[/bold magenta]",
-                    border_style="magenta"
-                ))
+                        await _emit_narrative(clean, title=tr('gm.awakens'))
 
                 console.print(f"\n[bold cyan]{tr('game.started')}[/bold cyan]\n")
 
@@ -647,7 +706,14 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         console.print(f"[bold red]{tr('gm.error', e=e)}[/bold red]")
                         continue
 
+                    # ── 恢复循环 + 安全上限（fix B）──
+                    resume_count = 0
                     while gm_response == "__SYSTEM_PAUSE__":
+                        resume_count += 1
+                        if resume_count > MAX_RESUMES:
+                            await _emit_narrative(tr('gm.resume_fallback'), title=tr('gm.title'))
+                            gm_response = None
+                            break
                         if DEBUG:
                             console.print("[bold cyan]DEBUG: Injecting Resume Token ({{_CONTINUE_EXECUTION}})[/bold cyan]")
                         dbg("RESUME", "Injected {{_CONTINUE_EXECUTION}}")
@@ -657,21 +723,11 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
                                 gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
 
+                    # ── 渲染该回合剧情段（fix C，已含按段图像）──
                     if gm_response and gm_response != "__SYSTEM_PAUSE__":
-                        clean_response = gm_response.replace("{{_NEED_AN_OTHER_PROMPT}}", "").replace("{{_NEED_ANOTHER_PROMPT}}", "").strip()
-
-                        if image_gen_fn and image_frequency > 0 and clean_response:
-                            narrative_counter += 1
-                            if narrative_counter % image_frequency == 0:
-                                await _auto_generate_image(clean_response)
-
+                        clean_response = _strip_pause_tokens(gm_response)
                         if clean_response:
-                            console.print(Panel(
-                                Padding(render_gm_text(clean_response), (1, 1)),
-                                title=f"[bold magenta]{tr('gm.title')}[/bold magenta]",
-                                border_style="magenta"
-                            ))
-                            console.print("\n")
+                            await _emit_narrative(clean_response, title=tr('gm.title'))
 
                         # ── Timeline checkpoint ────────────────────────
                         round_counter += 1
@@ -685,7 +741,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 tl_response = await chat_with_tools(prompt)
                                 if tl_response and tl_response != "__SYSTEM_PAUSE__":
                                     # Clean up sync tokens from timeline entry
-                                    entry = tl_response.replace("{{_NEED_AN_OTHER_PROMPT}}", "").replace("{{_NEED_ANOTHER_PROMPT}}", "").strip()
+                                    entry = _strip_pause_tokens(tl_response)
                                     if entry and "**Key Events**" in entry:
                                         append_timeline_file(timeline_path, entry)
                                         dbg("TIMELINE ENTRY", entry)
