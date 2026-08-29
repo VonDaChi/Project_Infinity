@@ -16,6 +16,7 @@ Things that MUST stay in English (never add to _STRINGS):
 - D&D data values from config/ (spell names, item names, stats...)
 """
 import os
+import sys
 
 import yaml
 
@@ -24,15 +25,41 @@ _current = "en"
 _SETTINGS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                          "config", "settings.yml")
 
+# Accepted spellings for each supported language. A hand-edited settings.yml
+# containing e.g. "zh-CN" or "Chinese" used to fall through to English; the
+# aliases below normalise those onto a supported code first.
+_ALIASES = {
+    "en": "en", "en-us": "en", "en_us": "en", "en-gb": "en", "english": "en",
+    "zh": "zh", "zh-cn": "zh", "zh_cn": "zh", "zh-hans": "zh", "zh-hant": "zh",
+    "zh-tw": "zh", "chinese": "zh", "中文": "zh", "简体中文": "zh",
+}
+
+# When enabled, tr() reports keys with no translation instead of silently
+# rendering the raw key name to the player. Set from game_engine in debug mode.
+_warn_missing = False
+
+
+def set_warn_missing(enabled):
+    """Enable/disable stderr warnings for missing translation keys."""
+    global _warn_missing
+    _warn_missing = bool(enabled)
+
+
+def _normalize(lang):
+    """Map a language value onto a supported code; unknown -> 'en'."""
+    if not isinstance(lang, str):
+        return "en"
+    return _ALIASES.get(lang.strip().lower(), "en")
+
 
 def get_lang():
     return _current
 
 
 def set_lang(lang, persist=True):
-    """Switch language. Unknown values fall back to 'en'."""
+    """Switch language. Unknown/unsupported values fall back to 'en'."""
     global _current
-    _current = lang if lang in _SUPPORTED else "en"
+    _current = _normalize(lang)
     if persist:
         _save(_current)
 
@@ -59,7 +86,10 @@ def tr(k, **kw):
     First parameter is named `k` (not `key`) so callers can safely use
     `key=...` as a format placeholder, e.g. tr('entry.apikey_missing', key=...).
     """
-    entry = _STRINGS.get(k, {})
+    entry = _STRINGS.get(k)
+    if _warn_missing and (not entry or not entry.get(_current)):
+        print(f"[i18n] missing key: {k}", file=sys.stderr)
+    entry = entry or {}
     s = entry.get(_current) or entry.get("en") or k
     return s.format(**kw) if kw else s
 
@@ -89,6 +119,12 @@ _STRINGS = {
                            "zh": "GM 仍在整理思绪……"},
     "gm.error":        {"en": "Error communicating with GM: {e}",
                         "zh": "与 GM 通信出错：{e}"},
+    "gm.no_response":  {"en": "[No response generated.]",
+                        "zh": "[模型未生成回复。]"},
+    "gm.content_filtered": {"en": "[Content filtered by safety settings. Please rephrase.]",
+                            "zh": "[内容被安全策略过滤，请换个说法。]"},
+    "gm.max_retries_exceeded": {"en": "[Error: max retries exceeded]",
+                                "zh": "[错误：已超出最大重试次数]"},
     "help.title":      {"en": "Help", "zh": "帮助"},
     "help.body": {
         "en": ("[bold white]Available Commands:[/bold white]\n\n"
@@ -165,6 +201,7 @@ _STRINGS = {
     "stats.tools":       {"en": "Tools:", "zh": "工具:"},
     "stats.features":    {"en": "Features:", "zh": "特性:"},
     "stats.languages":   {"en": "Languages:", "zh": "语言:"},
+    "stats.slot_level":  {"en": "Lv{level}: {slots}", "zh": "{level} 环：{slots}"},
     "stats.char_line2":  {"en": "⭐ Level {level}  💰 Gold {gold}  ✨ XP {xp}",
                           "zh": "⭐ 等级 {level}  💰 金币 {gold}  ✨ 经验 {xp}"},
     "stats.combat_line1": {"en": "❤️ {hp_cur}/{hp_max} HP  🛡️ AC {ac}  🏃 Speed {speed}",
@@ -186,6 +223,10 @@ _STRINGS = {
                              "zh": "未设置环境变量 {key}。"},
     "entry.apikey_hint": {"en": "Set it with: export {key}=your-api-key",
                           "zh": "请设置：export {key}=你的密钥"},
+    "entry.apikey_hint_ps": {"en": 'PowerShell: $env:{key}="sk-your-key"',
+                             "zh": 'PowerShell：$env:{key}="sk-your-key"'},
+    "entry.tag.responses": {"en": "[Responses]", "zh": "[新版 Responses]"},
+    "entry.tag.legacy":    {"en": "[Legacy]", "zh": "[旧版]"},
     "entry.interrupted": {"en": "Interrupted by user. Exiting...",
                           "zh": "已被用户中断，正在退出……"},
     "entry.goodbye":     {"en": "Goodbye.", "zh": "再见。"},
@@ -206,8 +247,13 @@ _STRINGS = {
     "nano.img_title": {"en": "Infinity Project: Image Generation Model Selection (Nano Banana)",
                        "zh": "Infinity Project：图像生成模型选择（Nano Banana）"},
     # play_with_deepseek.py / play_with_kobold.py startup panels
+    "deepseek.title": {"en": "Project Infinity × DeepSeek",
+                       "zh": "Infinity Project × DeepSeek"},
     "deepseek.panel": {"en": "Model: {model}  |  Context: {ctx} tokens  |  api.deepseek.com",
                        "zh": "模型：{model}  |  上下文：{ctx} tokens  |  api.deepseek.com"},
+    "kobold.title":   {"en": "Project Infinity × KoboldCpp",
+                       "zh": "Infinity Project × KoboldCpp"},
+    "kobold.base_url": {"en": "Base URL: {url}", "zh": "基础地址：{url}"},
     "kobold.panel":   {"en": "Model: {model}  |  Context: {ctx} tokens ({ctx_label})  |  max_output: {max_out}",
                        "zh": "模型：{model}  |  上下文：{ctx} tokens（{ctx_label}）|  max_output：{max_out}"},
     "kobold.ctx.override": {"en": "override", "zh": "手动指定"},

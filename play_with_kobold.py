@@ -258,7 +258,7 @@ def create_kobold_chat_fn(base_url, api_key, model, context_window,
                 if not choice:
                     return {
                         "prompt_eval_count": prompt_tokens,
-                        "message": {"content": "[No response generated.]", "tool_calls": None},
+                        "message": {"content": tr('gm.no_response'), "tool_calls": None},
                     }
 
                 msg = choice.message
@@ -333,7 +333,7 @@ def create_kobold_chat_fn(base_url, api_key, model, context_window,
         return {
             "prompt_eval_count": 0,
             "message": {
-                "content": "[Error: max retries exceeded]",
+                "content": tr('gm.max_retries_exceeded'),
                 "tool_calls": None,
             },
         }
@@ -365,8 +365,8 @@ async def main():
         console.print(f"[dim]Context window: {context_window:,} tokens ({ctx_label})[/dim]")
 
     console.print(Panel(
-        f"[bold cyan]Project Infinity × KoboldCpp[/bold cyan]\n"
-        f"[dim]Base URL: {args.base_url}\n"
+        f"[bold cyan]{tr('kobold.title')}[/bold cyan]\n"
+        f"[dim]{tr('kobold.base_url', url=args.base_url)}\n"
         f"[dim]{tr('kobold.panel', model=model, ctx=f'{context_window:,}', ctx_label=ctx_label, max_out=args.max_output_tokens)}[/dim]",
         expand=False
     ))

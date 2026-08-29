@@ -255,6 +255,9 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
 
     # Load persisted UI language (missing/corrupt settings -> English).
     i18n.load_saved()
+    # Surface untranslated keys on stderr in debug mode instead of silently
+    # rendering the raw key name to the player.
+    i18n.set_warn_missing(DEBUG)
 
     if VERBOSE:
         console.print(f"[dim]{tr('mode.verbose')}[/dim]")

@@ -188,7 +188,7 @@ def create_deepseek_chat_fn(api_key, debug=False, think=False, temperature=DEFAU
                 if not choice:
                     return {
                         "prompt_eval_count": prompt_tokens,
-                        "message": {"content": "[No response generated.]", "tool_calls": None},
+                        "message": {"content": tr('gm.no_response'), "tool_calls": None},
                     }
 
                 msg = choice.message
@@ -269,7 +269,7 @@ def create_deepseek_chat_fn(api_key, debug=False, think=False, temperature=DEFAU
         return {
             "prompt_eval_count": 0,
             "message": {
-                "content": "[Error: max retries exceeded]",
+                "content": tr('gm.max_retries_exceeded'),
                 "tool_calls": None,
             },
         }
@@ -282,8 +282,8 @@ async def main():
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         console.print(f"[bold red]{tr('err.prefix')}[/bold red] {tr('entry.apikey_missing', key='DEEPSEEK_API_KEY')}")
-        console.print("[yellow]PowerShell: $env:DEEPSEEK_API_KEY=\"sk-your-key\"[/yellow]")
-        console.print("[yellow]Bash:      export DEEPSEEK_API_KEY=\"sk-your-key\"[/yellow]")
+        console.print(f"[yellow]{tr('entry.apikey_hint_ps', key='DEEPSEEK_API_KEY')}[/yellow]")
+        console.print(f"[yellow]{tr('entry.apikey_hint', key='DEEPSEEK_API_KEY')}[/yellow]")
         sys.exit(1)
 
     args = parse_args()
@@ -294,7 +294,7 @@ async def main():
     context_window = MODEL_CONTEXT_LENGTHS.get(model, 1000000)
 
     console.print(Panel(
-        f"[bold cyan]Project Infinity × DeepSeek[/bold cyan]\n"
+        f"[bold cyan]{tr('deepseek.title')}[/bold cyan]\n"
         f"[dim]{tr('deepseek.panel', model=model, ctx=f'{context_window:,}')}[/dim]",
         expand=False
     ))

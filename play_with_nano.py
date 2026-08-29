@@ -90,7 +90,7 @@ def convert_response(response):
         return {
             'prompt_eval_count': 0,
             'message': {
-                'content': "[Content filtered by safety settings. Please rephrase.]",
+                'content': tr('gm.content_filtered'),
                 'tool_calls': None,
             }
         }
@@ -117,7 +117,7 @@ def convert_response(response):
         return {
             'prompt_eval_count': 0,
             'message': {
-                'content': "[No response generated.]",
+                'content': tr('gm.no_response'),
                 'tool_calls': None,
             }
         }

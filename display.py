@@ -121,7 +121,7 @@ def format_stats(db_data):
             spell_lines.append(f"📕 {tr('stats.spellbook')} {', '.join(str(s) for s in spellbook)}")
         slots = spell_data.get('slots', {})
         if slots:
-            slot_parts = [f"Lv{k}: {v}" for k, v in slots.items()]
+            slot_parts = [tr('stats.slot_level', level=k, slots=v) for k, v in slots.items()]
             spell_lines.append(f"🔥 {' | '.join(slot_parts)}")
         panels.append(Panel("\n".join(spell_lines), title=tr('stats.spellcasting'), border_style="magenta", expand=False))
 

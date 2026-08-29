@@ -50,7 +50,8 @@ def parse_args():
 async def select_model(input_session):
     console.print(Panel(f"[bold magenta]{tr('entry.llm_title', suffix=' (OpenAI)')}[/bold magenta]", expand=False))
     for i, model in enumerate(AVAILABLE_MODELS):
-        tag = "[dim]\\[Responses][/dim]" if model in RESPONSES_API_MODELS else "[dim]\\[Legacy][/dim]"
+        tag = (f"[dim]{tr('entry.tag.responses')}[/dim]" if model in RESPONSES_API_MODELS
+               else f"[dim]{tr('entry.tag.legacy')}[/dim]")
         console.print(f"[cyan]{i+1}[/cyan] {model} {tag}")
 
     choice = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("entry.select_model")}</b></ansicyan> '))
@@ -402,7 +403,7 @@ def create_gpt_chat_fn(api_key, debug=False, thinking_level=None, temperature=DE
                         return {
                             'prompt_eval_count': prompt_eval_count,
                             'message': {
-                                'content': "[No response generated.]",
+                                'content': tr('gm.no_response'),
                                 'tool_calls': None,
                             }
                         }
