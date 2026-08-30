@@ -119,6 +119,11 @@ def main():
         r = httpx.get(BASE + "/api/state", timeout=5)
         check("未登录时 /api/state 返回 401", r.status_code == 401, str(r.status_code))
 
+        # 1b. localhost may read its own PIN (no console needed)
+        r = httpx.get(BASE + "/api/pin", timeout=5)
+        check("本机可读取 /api/pin", r.status_code == 200 and r.json().get("pin") == pin,
+              str(r.status_code))
+
         # 2. wrong PIN rejected
         r = httpx.post(BASE + "/api/login", json={"pin": "0000000"}, timeout=5)
         check("错误 PIN 被拒绝", r.status_code == 401, str(r.status_code))

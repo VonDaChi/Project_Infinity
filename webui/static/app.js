@@ -394,6 +394,26 @@ function updateContext(p) {
   }
 }
 
+async function showLocalPin() {
+  // The server only returns the PIN to localhost; a LAN peer gets 403 and the
+  // element stays empty. So the PIN surfaces in the one place the user can see
+  // (this browser) without needing the console window.
+  const el = $('localPin');
+  try {
+    const res = await fetch('/api/pin');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.pin) {
+        el.textContent = `本机 PIN：${data.pin}`;
+        el.classList.remove('hidden');
+        return;
+      }
+    }
+  } catch (e) { /* ignore — not localhost */ }
+  el.textContent = '';
+  el.classList.add('hidden');
+}
+
 /* ── state loading ───────────────────────────────────────────────────────── */
 
 async function loadState() {
@@ -401,6 +421,7 @@ async function loadState() {
   if (res.status === 401) {
     state.authed = false;
     show('login');
+    showLocalPin();
     $('pinInput').focus();
     return false;
   }

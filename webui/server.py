@@ -46,7 +46,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next):
         path = request.url.path
-        if path.startswith("/api/") and not path.startswith("/api/login"):
+        if path.startswith("/api/") and not path.startswith("/api/login") \
+                and not path.startswith("/api/pin"):
             if not config.token_ok(request.cookies.get(AUTH_COOKIE)):
                 return JSONResponse({"ok": False, "error": "unauthorized"}, 401)
         return await call_next(request)
@@ -76,6 +77,16 @@ async def api_logout(request: Request):
     response = JSONResponse({"ok": True})
     response.delete_cookie(AUTH_COOKIE)
     return response
+
+
+async def api_get_pin(request: Request):
+    # Only the machine running the server may read its own PIN. A LAN peer
+    # hitting this from another IP gets 403, so the PIN never leaves localhost
+    # — equivalent to the console banner, which is also only visible locally.
+    host = (request.client.host if request.client else "") or ""
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        return JSONResponse({"ok": False, "error": "forbidden"}, 403)
+    return JSONResponse({"ok": True, "pin": request.app.state.cfg.get("pin", "")})
 
 
 async def api_state(request: Request):
@@ -210,6 +221,7 @@ async def ws_game(websocket):
 routes = [
     Route("/", index),
     Route("/api/login", api_login, methods=["POST"]),
+    Route("/api/pin", api_get_pin, methods=["GET"]),
     Route("/api/logout", api_logout, methods=["POST"]),
     Route("/api/state", api_state),
     Route("/api/backends", api_backends),
@@ -288,6 +300,23 @@ def main():
     cfg = app.state.cfg
     host = cfg.get("host") or config.DEFAULT_HOST
     port = int(cfg.get("port") or config.DEFAULT_PORT)
+
+    # If the port is already taken, a previous instance is still running.
+    # Don't stack another server + another auto-opened browser tab on a
+    # repeated double-click — just point the user at the live one.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((str(host), port))
+    except OSError:
+        print()
+        print("  Project Infinity — WebUI")
+        print("  " + "-" * 42)
+        print(f"  端口 {port} 已被占用，WebUI 应该已经在运行。")
+        print(f"  直接访问    http://127.0.0.1:{port}")
+        print()
+        return
+    finally:
+        probe.close()
 
     print()
     print("  Project Infinity — WebUI")
