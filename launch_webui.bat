@@ -29,7 +29,12 @@ if not exist "%PYEXE%" (
 
 cd /d "%ROOT%"
 REM 内嵌 Python 为隔离模式，cwd 不在 sys.path，故用脚本式入口而非 -m webui
-"%PYEXE%" webui\__main__.py
+"%PYEXE%" "%ROOT%webui\__main__.py"
+if errorlevel 1 (
+    echo [错误] WebUI 启动失败（错误码 %errorlevel%）。请查看上方报错；或先运行 launch.bat 确认后端可用。
+    pause
+    exit /b %errorlevel%
+)
 
 echo.
 echo 服务已停止。

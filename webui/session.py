@@ -112,7 +112,8 @@ class GameSession:
             chat_fn = backends.build_chat_fn(
                 self.backend_id, self.options, debug=self.debug)
             model = self.options.get("model") or backends.default_model(self.backend_id)
-            context_window = backends.context_window_for(self.backend_id, model)
+            context_window = backends.context_window_for(
+                self.backend_id, model, self.options.get("base_url"))
             await game_engine.run_game(
                 chat_fn, model, context_window,
                 verbose=False, debug=self.debug,

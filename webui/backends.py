@@ -12,6 +12,8 @@ gpt/claude take max_output_tokens), so arguments are filtered through
 
 import importlib
 import inspect
+import json
+import urllib.request
 
 from webui import config
 
@@ -100,13 +102,64 @@ def default_model(backend_id):
     return models[0] if models else ""
 
 
-def context_window_for(backend_id, model):
+# Cache real KoboldCpp context length per base_url — the network probe runs
+# once per server, not on every describe()/build call.
+_KOBOLD_CTX_CACHE = {}
+
+
+def _kobold_real_context_length(base_url, timeout=2.0):
+    """Synchronously probe KoboldCpp for its real max context length.
+
+    KoboldCpp exposes this via its OpenAI-compatible surface. We use urllib
+    (stdlib, no extra deps) so the call stays safe from a synchronous context
+    such as inside an asyncio request handler — no event-loop juggling needed.
+    Returns an int on success, else None.
+    """
+    native = (base_url or "").rstrip("/")
+    if native.endswith("/v1"):
+        native = native[:-3]
+    if not native:
+        return None
+    for path in ("/api/v1/config/max_context_length", "/api/extra/true_max_context_length"):
+        try:
+            req = urllib.request.Request(
+                native + path, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                if r.status != 200:
+                    continue
+                data = json.loads(r.read().decode("utf-8", "replace"))
+        except Exception:
+            continue
+        val = None
+        if isinstance(data, dict):
+            val = data.get("result", data.get("value", data.get("max_context_length")))
+        elif isinstance(data, int):
+            val = data
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def context_window_for(backend_id, model, base_url=None):
     module = _module(backend_id)
     lengths = getattr(module, "MODEL_CONTEXT_LENGTHS", None) or {}
     if model in lengths:
         return int(lengths[model])
     if lengths:
         return int(next(iter(lengths.values())))
+    if backend_id == "kobold":
+        # Ask the real backend for its context length instead of trusting the
+        # 8192 fallback — otherwise a 16k model still gets capped and long GM
+        # replies are silently truncated.
+        cache_key = base_url or "<default>"
+        if cache_key not in _KOBOLD_CTX_CACHE:
+            real = _kobold_real_context_length(base_url) if base_url else None
+            _KOBOLD_CTX_CACHE[cache_key] = int(real) if real else int(
+                getattr(module, "FALLBACK_CONTEXT_WINDOW", FALLBACK_CONTEXT_WINDOW))
+        return _KOBOLD_CTX_CACHE[cache_key]
     return int(getattr(module, "FALLBACK_CONTEXT_WINDOW", FALLBACK_CONTEXT_WINDOW))
 
 
@@ -127,7 +180,7 @@ def build_chat_fn(backend_id, options, debug=False):
     kwargs = dict(options)
     kwargs["model"] = model
     # kobold's factory takes the context window directly; everyone else ignores it.
-    kwargs["context_window"] = context_window_for(backend_id, model)
+    kwargs["context_window"] = context_window_for(backend_id, model, options.get("base_url"))
     kwargs["debug"] = debug
     # Local / OpenAI-compatible servers (kobold) accept any non-empty key; when the
     # registry says no key is needed, inject a harmless placeholder so the OpenAI
@@ -178,6 +231,7 @@ def describe(cfg):
             "fields": spec["fields"],
             "options": options,
             "context_window": context_window_for(
-                backend_id, options.get("model") or default_model(backend_id)),
+                backend_id, options.get("model") or default_model(backend_id),
+                options.get("base_url")),
         })
     return out

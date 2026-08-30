@@ -26,7 +26,7 @@ def normalize_crlf(name: str) -> bool:
 
 
 if __name__ == "__main__":
-    for bat in ("launch.bat", "setup.bat"):
+    for bat in ("launch.bat", "setup.bat", "launch_webui.bat"):
         normalize_crlf(bat)
     if sys.stdin.isatty():
         try:

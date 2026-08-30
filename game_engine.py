@@ -625,6 +625,38 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 console.print("[bold yellow]DEBUG: Tool calls executed alongside sync token. Ignoring token and continuing loop.[/bold yellow]")
                             continue
 
+                        # ── 输出被 token 上限截断时自动续写（kobold 等本地模型常见）──
+                        # 续写内容拼接到同一段叙事，避免回复被 "length" 静默砍断。
+                        finish_reason = response.get("finish_reason")
+                        length_continues = 0
+                        MAX_LENGTH_CONTINUES = 3
+                        while finish_reason == "length" and length_continues < MAX_LENGTH_CONTINUES:
+                            length_continues += 1
+                            dbg("GM OUTPUT (truncated)",
+                                f"finish_reason=length, auto-continue ({length_continues}/{MAX_LENGTH_CONTINUES})")
+                            if DEBUG:
+                                console.print(
+                                    f"[bold yellow]DEBUG: Output truncated (length). "
+                                    f"Continuing... ({length_continues}/{MAX_LENGTH_CONTINUES})[/bold yellow]")
+                            messages.append({"role": "user", "content": "Continue"})
+                            response = await chat_fn(
+                                messages=messages,
+                                tools=tools_schema,
+                                model=model,
+                                context_window=context_window,
+                            )
+                            current_context_tokens = response.get('prompt_eval_count', current_context_tokens)
+                            if DEBUG:
+                                console.print(f"[dim]DEBUG RESPONSE (cont): {response}[/dim]")
+                            _msg = response.get('message') or {}
+                            _raw = _msg.get('content', "") if isinstance(_msg, dict) else ""
+                            _cont, _, _is_pause, _ = _process_response_content(_raw, response.get('thinking_only'))
+                            if _is_pause:
+                                dbg("CHECKPOINT", "{{_NEED_AN_OTHER_PROMPT}} detected during continue — stopping")
+                                break
+                            content = content + "\n" + _cont
+                            finish_reason = response.get("finish_reason")
+
                         dbg("GM OUTPUT", content)
                         return content
 
@@ -842,6 +874,13 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     clean = _strip_pause_tokens(response_text)
                     if clean:
                         await _emit_narrative(clean, title=tr('gm.awakens'))
+                        # 开场叙事渲染后立刻推一次角色面板，避免 WebUI 侧栏空白
+                        # 直到首次检定/战斗才出现（角色库由 GM 经工具逐步填充，
+                        # 若开场即建立则此处已能推真实数据）。
+                        try:
+                            await _autosave(live=True)
+                        except Exception:
+                            pass
 
                 console.print(f"\n[bold cyan]{tr('game.started')}[/bold cyan]\n")
 

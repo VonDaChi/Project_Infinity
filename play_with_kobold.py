@@ -32,6 +32,7 @@ plain chat will not emit the tool_calls this game depends on.
 import os
 import sys
 import json
+import re
 import argparse
 import asyncio
 from collections import deque
@@ -227,7 +228,11 @@ def create_kobold_chat_fn(base_url, api_key, model, context_window,
                 })
 
         # ── Chat Completions API call (OpenAI-compatible) ──────
-        max_tokens = min(context_window, max_output_tokens)
+        # 以用户设定的 max_output_tokens 为主，仅当超过 (上下文窗口 - 提示词预留)
+        # 时才钳制。原先 min(context_window, max_output_tokens) 会把上限暗中钳成
+        # 固定窗口值，导致用户设大值仍被静默截断。这里至少留 2048 给提示词，
+        # 且不低于 512，避免输出占满整窗触发 API 报错。
+        max_tokens = min(max_output_tokens, max(context_window - 2048, 512))
         kwargs = {
             "model": model,
             "messages": openai_messages,
@@ -267,6 +272,15 @@ def create_kobold_chat_fn(base_url, api_key, model, context_window,
 
                 msg = choice.message
                 content = msg.content or ""
+                # KoboldCpp 在启用 OpenAI 风格 tool calling 时，会把工具调用以
+                # 文本 "(Made a function call tc_N to <name> with arguments={...})"
+                # 回显进 content。这段文字若原样返回，引擎会把它当叙事推给玩家
+                # （表现为 GM 开场爆出原始工具调用）。这里剥离回显，只保留真正的
+                # 剧情文本；同时让回传给模型的上下文保持干净，避免再次触发空响应。
+                if content:
+                    content = re.sub(
+                        r"\(Made a function call[^)]*\)\s*", "", content
+                    ).strip()
 
                 tool_calls = None
                 if msg.tool_calls:
@@ -313,16 +327,31 @@ def create_kobold_chat_fn(base_url, api_key, model, context_window,
                         "content": content,
                         "tool_calls": tool_calls,
                     },
+                    # 透传 finish_reason，使引擎能检测 "length" 截断并自动续写。
+                    "finish_reason": (choice.finish_reason or ""),
                 }
 
-            except APIStatusError as e:
-                if e.status_code in (429, 500, 502, 503) and attempt < max_retries - 1:
+            except (APIStatusError, json.JSONDecodeError) as e:
+                is_retryable_status = (
+                    isinstance(e, APIStatusError)
+                    and e.status_code in (429, 500, 502, 503)
+                )
+                # KoboldCpp 在工具调用后的回合偶尔返回空/非 JSON 响应体，OpenAI
+                # 客户端会抛 JSONDecodeError("Expecting value: line 1 column 1")。
+                # 这类瞬时空响应应当重试，而非让整个 GM 回合崩溃报"与 GM 通信出错"。
+                if (is_retryable_status and attempt < max_retries - 1) or isinstance(e, json.JSONDecodeError):
                     if debug:
-                        console.print(
-                            f"[bold yellow]DEBUG: API error {e.status_code}. "
-                            f"Retrying... ({attempt+1}/{max_retries})[/bold yellow]"
-                        )
-                    await asyncio.sleep(2)
+                        if is_retryable_status:
+                            console.print(
+                                f"[bold yellow]DEBUG: API error {e.status_code}. "
+                                f"Retrying... ({attempt+1}/{max_retries})[/bold yellow]"
+                            )
+                        else:
+                            console.print(
+                                f"[bold yellow]DEBUG: Empty/invalid response from "
+                                f"KoboldCpp ({type(e).__name__}). Retrying...[/bold yellow]"
+                            )
+                    await asyncio.sleep(2 if is_retryable_status else 1)
                     continue
                 raise e
             except Exception as e:

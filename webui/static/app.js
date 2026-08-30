@@ -15,6 +15,10 @@ const state = {
 };
 
 let sysEl = null;
+let showRaw = false;
+let rawBuffer = '';
+let rawWrap = null;
+let rawLog = null;
 let waitEl = null;
 let toolCount = 0;
 
@@ -60,6 +64,7 @@ function setConn(ok) {
 }
 
 function connect() {
+  initRawSetting();
   if (state.ws && state.ws.readyState <= 1) return;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws`);
@@ -90,14 +95,52 @@ function send(text) {
 
 function flushSys() { sysEl = null; }
 
-function appendSys(text) {
-  if (!sysEl) {
-    sysEl = document.createElement('pre');
-    sysEl.className = 'sys';
-    stream.appendChild(sysEl);
-  }
-  sysEl.textContent += text;
+// 原始输出（引擎 console.print 的命令行同款带框文本）。
+// 默认完全隐藏；设置开关打开后才在对话流末尾显示可折叠面板。
+function ensureRawPanel() {
+  if (rawWrap) return;
+  rawWrap = document.createElement('details');
+  rawWrap.className = 'raw-wrap';
+  rawWrap.appendChild(document.createElement('summary'));
+  rawLog = document.createElement('pre');
+  rawLog.className = 'raw-log';
+  rawWrap.appendChild(rawLog);
+  stream.appendChild(rawWrap);
+  updateRawSummary();
+}
+
+function updateRawSummary() {
+  if (!rawWrap) return;
+  const lines = rawBuffer.split('\n').length;
+  rawWrap.querySelector('summary').textContent =
+    `原始输出（命令行同款）· ${lines} 行`;
+}
+
+function handleRaw(text) {
+  rawBuffer += text;
+  if (!showRaw) return;
+  ensureRawPanel();
+  rawLog.textContent = rawBuffer;
+  updateRawSummary();
   scroll();
+}
+
+function setShowRaw(v) {
+  showRaw = v;
+  try { localStorage.setItem('pi_show_raw', v ? '1' : '0'); } catch (e) {}
+  if (v) {
+    ensureRawPanel();
+    rawLog.textContent = rawBuffer;
+    updateRawSummary();
+  } else if (rawWrap) {
+    rawWrap.remove();
+    rawWrap = null;
+    rawLog = null;
+  }
+}
+
+function initRawSetting() {
+  try { showRaw = localStorage.getItem('pi_show_raw') === '1'; } catch (e) {}
 }
 
 function addNarrative(ev) {
@@ -151,12 +194,19 @@ function addTool(ev) {
 
   if (data && data.outcome) {
     const win = /success/i.test(String(data.outcome));
+    // 兼容两套字段名：perform_check 用 total/base_roll/modifier/dc_to_beat/check_name，
+    // resolve_attack 用 total_attack/attack_roll/attack_modifier/target_ac。
+    const total = data.total ?? data.total_attack ?? '—';
+    const dc = data.dc_to_beat ?? data.target_ac ?? '—';
+    const base = data.base_roll ?? data.attack_roll ?? '—';
+    const mod = data.modifier ?? data.attack_modifier ?? '—';
+    const checkName = data.check_name ?? null;
     el.innerHTML =
-      `<span class="tag"><span class="die"></span>${esc(data.check_name || TOOL_LABELS[ev.name] || ev.name)}</span>` +
-      `<span class="total">${esc(String(data.total ?? '—'))}</span>` +
-      `<span class="vs">vs DC ${esc(String(data.dc_to_beat ?? '—'))}</span>` +
+      `<span class="tag"><span class="die"></span>${esc(checkName || TOOL_LABELS[ev.name] || ev.name)}</span>` +
+      `<span class="total">${esc(String(total))}</span>` +
+      `<span class="vs">vs DC ${esc(String(dc))}</span>` +
       `<span class="verdict ${win ? 'win' : 'lose'}">${esc(OUTCOMES[data.outcome] || data.outcome)}</span>` +
-      `<span class="detail">${esc(String(data.base_roll))} + ${esc(String(data.modifier))} · ${esc(ev.name)}</span>`;
+      `<span class="detail">${esc(String(base))} + ${esc(String(mod))} · ${esc(ev.name)}</span>`;
   } else {
     el.classList.add('plain');
     el.innerHTML = `<span class="tag">${esc(TOOL_LABELS[ev.name] || ev.name)}</span>` +
@@ -231,7 +281,7 @@ function onEvent(ev) {
   switch (ev.type) {
     case 'narrative': flushSys(); addNarrative(ev); break;
     case 'tool': flushSys(); addTool(ev); break;
-    case 'out': appendSys(ev.text); break;
+    case 'out': handleRaw(ev.text); break;
     case 'prompt': flushSys(); onPrompt(ev.text); break;
     case 'stats': onStats(ev); break;
     case 'error': flushSys(); addNotice(ev.text, true); break;
@@ -664,6 +714,7 @@ function bindUI() {
     { $('setTempVal').textContent = Number(e.target.value).toFixed(1); });
   $('setCancel').addEventListener('click', () => hide('settings'));
   $('setSave').addEventListener('click', saveSettings);
+  $('setRaw').addEventListener('change', (e) => setShowRaw(e.target.checked));
 
   document.querySelectorAll('.mobile-tabs button').forEach((btn) => {
     btn.addEventListener('click', () => {
