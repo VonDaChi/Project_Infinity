@@ -24,6 +24,9 @@ mcp = FastMCP("InfinityRolls", log_level="WARNING")
 DB_CONNECTION = None
 
 _COMBAT_REGISTRY: dict[str, dict] = {}
+# Monotonic allocator for stable combatant ids. Persisted via
+# export/import_session_state so ids survive a restart.
+_next_npc_id: int = 0
 
 XP_THRESHOLDS = [
     (2, 300), (3, 900), (4, 2700), (5, 6500),
@@ -204,9 +207,15 @@ def init_player_db(player_file_path: str) -> str:
 
         DB_CONNECTION.commit()
 
-        cursor.execute("INSERT OR REPLACE INTO player (key, value) VALUES (?, ?)", ("active_effects", "[]"))
-        cursor.execute("INSERT OR REPLACE INTO player (key, value) VALUES (?, ?)", ("_active_buff_data", "{}"))
-        cursor.execute("INSERT OR REPLACE INTO player (key, value) VALUES (?, ?)", ("temporary_hit_points", "0"))
+        # Seed session-scoped keys only when absent. Unconditionally REPLACE-ing
+        # them would drop the buff vouchers a pure snapshot deliberately kept,
+        # leaving the numeric bonus applied but impossible to revert — i.e. a
+        # permanently stuck buff across restarts.
+        for _key, _default in (("active_effects", "[]"),
+                               ("_active_buff_data", "{}"),
+                               ("temporary_hit_points", "0")):
+            cursor.execute("INSERT OR IGNORE INTO player (key, value) VALUES (?, ?)",
+                           (_key, _default))
         DB_CONNECTION.commit()
 
         return f"Database initialized with player data from {player_file_path}."
@@ -389,6 +398,48 @@ def _cleanup_thp_effects(cursor):
         names = ", ".join(removed)
         return f"{names} has expired — temporary HP depleted. "
     return ""
+
+
+def _revert_active_buffs(cursor):
+    """Revert every active buff and clear its bookkeeping voucher.
+
+    This is the single authoritative implementation. `rest` and the old
+    `/save` command each carried their own copy of this loop, which drifted
+    (notably around temporary HP). Both now call this.
+
+    The revert and the voucher clear are *atomic*: rollback must always be
+    paired with clearing `_active_buff_data` / `active_effects`, otherwise a
+    second pass would subtract the same deltas again. Callers that want a
+    snapshot instead must do neither (see game_engine's /save).
+
+    Returns the list of spell names that were cleared.
+    """
+    buff_data = _db_val(cursor, "_active_buff_data", {}) or {}
+    if isinstance(buff_data, str):
+        try:
+            buff_data = json.loads(buff_data)
+        except (json.JSONDecodeError, TypeError):
+            buff_data = {}
+
+    cleared = []
+    for spell_name in list(buff_data.keys()):
+        for entry in buff_data.get(spell_name) or []:
+            field = entry.get("field")
+            delta = entry.get("delta", 0)
+            if not field:
+                continue
+            if field == "temporary_hit_points":
+                # thp is a pool written over the top (_apply_thp), so zeroing is
+                # equivalent to -delta and can never go negative.
+                _db_set(cursor, field, "0")
+            else:
+                modify_player_numeric(key=field, delta=-delta)
+        cleared.append(spell_name)
+
+    _db_set(cursor, "active_effects", [])
+    _db_set(cursor, "_active_buff_data", {})
+    DB_CONNECTION.commit()
+    return cleared
 
 
 def get_nested_value(data, path):
@@ -1107,15 +1158,7 @@ def rest(rest_type: str, prepared_spells: list[str] | None = None) -> dict:
                 if caster_type == "warlock":
                     changes["slots_restored"] = {"pact_magic": {str(k): v for k, v in slot_table.items()}}
 
-            effects_cleared = []
-            for spell_name in list(buff_data.keys()):
-                entries = buff_data[spell_name]
-                for entry in entries:
-                    modify_player_numeric(key=entry["field"], delta=-entry["delta"])
-                effects_cleared.append(spell_name)
-            _db_set(cursor, "active_effects", [])
-            _db_set(cursor, "_active_buff_data", {})
-            DB_CONNECTION.commit()
+            effects_cleared = _revert_active_buffs(cursor)
             if effects_cleared:
                 changes["effects_cleared"] = effects_cleared
 
@@ -1308,41 +1351,68 @@ def perform_check(modifier: int, dc: int, check_name: str = "Check", actor: str 
     return response
 
 
+def _next_combat_id() -> str:
+    """Allocate a stable, unique combatant id (npc_0001, npc_0002, ...)."""
+    global _next_npc_id
+    _next_npc_id += 1
+    return f"npc_{_next_npc_id:04d}"
+
+
+def _registry_resolve(key_or_name):
+    """Look up a combatant by id first, then by unique display name.
+
+    The registry is keyed by a stable id, so two NPCs sharing a display name
+    no longer overwrite each other. Callers throughout this file still pass
+    names, so fall back to a name scan — but return None when the name is
+    ambiguous rather than silently picking one, so the caller can report the
+    conflict instead of damaging the wrong combatant.
+    """
+    if key_or_name is None:
+        return None
+    entry = _COMBAT_REGISTRY.get(key_or_name)
+    if entry:
+        return entry
+    matches = [e for e in _COMBAT_REGISTRY.values() if e.get("name") == key_or_name]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 def _registry_hp(target_name: str) -> int | None:
-    entry = _COMBAT_REGISTRY.get(target_name)
+    entry = _registry_resolve(target_name)
     if entry:
         return entry["current_hp"]
     return None
 
 
 def _registry_ac(target_name: str) -> int | None:
-    entry = _COMBAT_REGISTRY.get(target_name)
+    entry = _registry_resolve(target_name)
     if entry:
         return entry["ac"]
     return None
 
 
 def _registry_update_hp(target_name: str, new_hp: int):
-    entry = _COMBAT_REGISTRY.get(target_name)
+    entry = _registry_resolve(target_name)
     if entry:
         entry["current_hp"] = new_hp
 
 
 def _registry_kill(target_name: str):
-    entry = _COMBAT_REGISTRY.get(target_name)
+    entry = _registry_resolve(target_name)
     if entry:
         entry["killed"] = True
 
 
 def _registry_cr(target_name: str) -> float | None:
-    entry = _COMBAT_REGISTRY.get(target_name)
+    entry = _registry_resolve(target_name)
     if entry:
         return entry.get("challenge_rating")
     return None
 
 
 def _registry_max_hp(target_name: str) -> int:
-    entry = _COMBAT_REGISTRY.get(target_name)
+    entry = _registry_resolve(target_name)
     if entry:
         return entry["max_hp"]
     return 0
@@ -1385,10 +1455,11 @@ def register_combatants(combatants: list[dict], add_to_existing: bool = False) -
         {"name": "Guard Reinforce 2", "hp": 11, "ac": 16},
     ], add_to_existing=True)
     """
-    global _COMBAT_REGISTRY, DB_CONNECTION
+    global _COMBAT_REGISTRY, DB_CONNECTION, _next_npc_id
 
     if not add_to_existing:
         _COMBAT_REGISTRY = {}
+        _next_npc_id = 0
 
     initiative_results = []
 
@@ -1404,7 +1475,10 @@ def register_combatants(combatants: list[dict], add_to_existing: bool = False) -
         player_max_hp = int(_db_val(cursor, "total_hit_points", 1))
         player_ac = int(_db_val(cursor, "armor_class", 10))
 
-        _COMBAT_REGISTRY[player_name] = {
+        player_id = f"player:{player_name}"
+        _COMBAT_REGISTRY[player_id] = {
+            "id": player_id,
+            "name": player_name,
             "current_hp": player_hp,
             "max_hp": player_max_hp,
             "ac": player_ac,
@@ -1419,8 +1493,8 @@ def register_combatants(combatants: list[dict], add_to_existing: bool = False) -
 
         player_d20 = random.randint(1, 20)
         player_init_total = player_d20 + player_init_mod
-        _COMBAT_REGISTRY[player_name]["initiative_roll"] = player_d20
-        _COMBAT_REGISTRY[player_name]["initiative_total"] = player_init_total
+        _COMBAT_REGISTRY[player_id]["initiative_roll"] = player_d20
+        _COMBAT_REGISTRY[player_id]["initiative_total"] = player_init_total
         initiative_results.append({
             "name": player_name,
             "roll": player_d20,
@@ -1441,7 +1515,13 @@ def register_combatants(combatants: list[dict], add_to_existing: bool = False) -
         else:
             init_mod = c["initiative_modifier"]
 
-        _COMBAT_REGISTRY[name] = {
+        # Key by a fresh id, not by display name: two NPCs both called
+        # "Bandit" used to collapse into a single registry slot and then bleed
+        # into each other on every AoE / targeted hit.
+        cid = _next_combat_id()
+        _COMBAT_REGISTRY[cid] = {
+            "id": cid,
+            "name": name,
             "current_hp": max_hp,
             "max_hp": max_hp,
             "ac": ac,
@@ -1457,10 +1537,11 @@ def register_combatants(combatants: list[dict], add_to_existing: bool = False) -
         if not add_to_existing:
             d20 = random.randint(1, 20)
             init_total = d20 + init_mod
-            _COMBAT_REGISTRY[name]["initiative_roll"] = d20
-            _COMBAT_REGISTRY[name]["initiative_total"] = init_total
+            _COMBAT_REGISTRY[cid]["initiative_roll"] = d20
+            _COMBAT_REGISTRY[cid]["initiative_total"] = init_total
             initiative_results.append({
                 "name": name,
+                "id": cid,
                 "roll": d20,
                 "modifier": init_mod,
                 "total": init_total,
@@ -1468,9 +1549,10 @@ def register_combatants(combatants: list[dict], add_to_existing: bool = False) -
             })
 
     registry_summary = []
-    for rname, entry in _COMBAT_REGISTRY.items():
+    for entry in _COMBAT_REGISTRY.values():
         registry_summary.append({
-            "name": rname,
+            "name": entry.get("name"),
+            "id": entry.get("id"),
             "hp": f"{entry['current_hp']}/{entry['max_hp']}",
             "ac": entry["ac"],
             "initiative": entry["initiative_total"],
@@ -1504,6 +1586,99 @@ def register_combatants(combatants: list[dict], add_to_existing: bool = False) -
         "initiative_order": order,
         "registry_summary": registry_summary,
         "narrative_format": "\n".join(narrative_parts),
+    }
+
+
+SESSION_STATE_VERSION = 1
+
+
+@mcp.tool()
+def export_session_state() -> dict:
+    """
+    Returns the volatile session state so the host can persist it.
+
+    Covers what `dump_player_db` cannot: the combat registry (enemy HP, AC,
+    initiative, killed flags) and the combatant id allocator. The host writes
+    this to disk; dice_server itself never touches the filesystem.
+
+    EXAMPLES:
+    export_session_state()
+    """
+    return {
+        "version": SESSION_STATE_VERSION,
+        "combat": {
+            "active": bool(_COMBAT_REGISTRY),
+            "next_npc_id": _next_npc_id,
+            "registry": {key: dict(entry) for key, entry in _COMBAT_REGISTRY.items()},
+        },
+    }
+
+
+@mcp.tool()
+def import_session_state(state: dict) -> dict:
+    """
+    Restores volatile session state captured by export_session_state.
+
+    Call once at startup, right after the MCP session is initialised and before
+    the first GM turn, so a fight interrupted by closing the window resumes
+    where it left off instead of being re-rolled.
+
+    PARAMETERS:
+    - state: the dict previously returned by export_session_state.
+
+    EXAMPLES:
+    import_session_state(state={"version": 1, "combat": {"next_npc_id": 3,
+        "registry": {"npc_0001": {"id": "npc_0001", "name": "Bandit",
+        "current_hp": 4, "max_hp": 11, "ac": 12, "save_modifier": 0,
+        "challenge_rating": 0.125, "initiative_modifier": 2,
+        "initiative_roll": 9, "initiative_total": 11,
+        "is_player": False, "killed": False}}}})
+    """
+    global _COMBAT_REGISTRY, _next_npc_id
+
+    if not isinstance(state, dict):
+        return {"success": False, "error": "Session state must be an object."}
+
+    version = state.get("version")
+    if version not in (None, SESSION_STATE_VERSION):
+        return {"success": False,
+                "error": f"Unsupported session state version {version!r} "
+                         f"(expected {SESSION_STATE_VERSION})."}
+
+    combat = state.get("combat") or {}
+    registry = combat.get("registry")
+    if registry is None:
+        registry = {}
+    if not isinstance(registry, dict):
+        # Strict on purpose: an empty list is still a type error, and silently
+        # accepting it would hide a caller bug behind a "restored 0" success.
+        return {"success": False, "error": "combat.registry must be an object."}
+
+    restored = {}
+    skipped = 0
+    for key, entry in registry.items():
+        if not isinstance(entry, dict) or not entry.get("name"):
+            skipped += 1
+            continue
+        item = dict(entry)
+        item["id"] = key
+        restored[key] = item
+
+    _COMBAT_REGISTRY = restored
+    try:
+        _next_npc_id = int(combat.get("next_npc_id") or 0)
+    except (TypeError, ValueError):
+        _next_npc_id = len(restored)
+
+    names = [e["name"] for e in restored.values()]
+    return {
+        "success": True,
+        "restored": len(restored),
+        "skipped": skipped,
+        "narrative_format": (
+            f"Session state restored: {len(restored)} combatant(s)"
+            + (f" ({', '.join(names)})." if names else ".")
+        ),
     }
 
 
@@ -2564,11 +2739,14 @@ def resolve_magic(
             healed_list = []
             for t in targets:
                 tname = t.get("name", "Unknown")
+                # Prefer the stable id when the caller supplied one: two NPCs
+                # sharing a display name must not collapse onto one slot.
+                tkey = t.get("id") or tname
                 is_player = t.get("is_player", False)
                 tchp = t.get("current_hp")
                 if tchp is None:
-                    tchp = _registry_hp(tname) or 0
-                max_hp = _registry_max_hp(tname) or tchp
+                    tchp = _registry_hp(tkey) or 0
+                max_hp = _registry_max_hp(tkey) or tchp
                 new_hp = min(tchp + total_healing, max_hp)
                 if is_player and cursor:
                     delta = new_hp - tchp
@@ -2576,7 +2754,7 @@ def resolve_magic(
                     healed_list.append({"name": tname, "healing": delta, "hp_change": hp_result})
                     narrative_parts.append(f"{tname} HP: {hp_result['hp_status']}")
                 elif not is_player and tname:
-                    _registry_update_hp(tname, new_hp)
+                    _registry_update_hp(tkey, new_hp)
                     healed_list.append({"name": tname, "healing": new_hp - tchp, "remaining_hp": new_hp, "max_hp": max_hp})
                     narrative_parts.append(f"{tname} HP: {new_hp}/{max_hp}")
             result["targets_healed"] = healed_list
@@ -2734,13 +2912,15 @@ def resolve_magic(
 
         for t in targets:
             tname = t.get("name", "Unknown")
+            # Stable id wins over display name; see the healing loop above.
+            tkey = t.get("id") or tname
             tchp = t.get("current_hp")
             if tchp is None:
-                tchp = _registry_hp(tname) or 0
+                tchp = _registry_hp(tkey) or 0
             tsave = t.get("save_modifier", 0)
             tcr = t.get("challenge_rating")
             if tcr is None:
-                tcr = _registry_cr(tname)
+                tcr = _registry_cr(tkey)
             is_player = t.get("is_player", False)
 
             save_d20 = random.randint(1, 20)
@@ -2779,20 +2959,20 @@ def resolve_magic(
                 if sp_no_damage and sp_condition:
                     narrative_parts.append(f"{tname}: Affected — {sp_condition} ({sp_condition_duration})")
 
-            remaining = min(tchp + t_damage, _registry_max_hp(tname) or tchp) if sp_healing else tchp - t_damage
+            remaining = min(tchp + t_damage, _registry_max_hp(tkey) or tchp) if sp_healing else tchp - t_damage
             killed = False if sp_healing else (remaining <= 0 if tchp > 0 else False)
 
             if not is_player and tname:
-                _registry_update_hp(tname, remaining if sp_healing else max(remaining, 0))
+                _registry_update_hp(tkey, remaining if sp_healing else max(remaining, 0))
             if killed:
                 killed_count += 1
                 if not is_player:
-                    _registry_kill(tname)
-                max_hp = _registry_max_hp(tname) if tname else 0
+                    _registry_kill(tkey)
+                max_hp = _registry_max_hp(tkey) if tname else 0
                 display_max = f"/{max_hp}" if max_hp else ""
                 narrative_parts.append(f"{tname} HP: 0{display_max} (KILLED)")
             elif tchp > 0:
-                max_hp = _registry_max_hp(tname) if tname else 0
+                max_hp = _registry_max_hp(tkey) if tname else 0
                 display_max = f"/{max_hp}" if max_hp else ""
                 narrative_parts.append(f"{tname} HP: {remaining}{display_max}")
 

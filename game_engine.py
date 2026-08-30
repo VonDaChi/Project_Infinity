@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import asyncio
@@ -19,6 +20,7 @@ if _HERE not in sys.path:
 from display import format_stats, render_gm_text, render_image
 import i18n
 from i18n import tr
+import savemgr
 
 # Resolve data paths against the project root (this file's directory) rather
 # than the current working directory, so gameplay works regardless of where the
@@ -26,6 +28,15 @@ from i18n import tr
 LOCK_FILE = os.path.join(_HERE, "GameMaster_MCP.md")
 OUTPUT_DIR = os.path.join(_HERE, "output")
 TIMELINE_INTERVAL = 5  # rounds between timeline snapshots
+
+# ── Persistence tuning ───────────────────────────────────────────────────────
+# How many past messages to replay into a resumed session. Older ones are
+# covered by the timeline summary.
+HISTORY_WINDOW = savemgr.HISTORY_WINDOW
+# Backups kept per save file (.bak, .bak.1, .bak.2).
+MAX_BACKUPS = savemgr.MAX_BACKUPS
+# Sentinel distinguishing "no file" from "file contained null / junk".
+_MISSING = object()
 
 # ── GM pause / checkpoint protocol tokens ─────────────────────────────────────
 # 这些是协议控制 token，必须保持英文原样，禁止翻译（不传入 tr()）。
@@ -51,6 +62,53 @@ def _strip_pause_tokens(text):
     for tok in PAUSE_TOKENS:
         out = out.replace(tok, "")
     return out.strip()
+
+
+# ── 思维链（<think>）识别与剥离 ──────────────────────────────────
+# 本地模型（koboldcpp 等）常把推理内联写进 content，且在被输出长度截断时
+# 不会补上 </think>。必须在渲染/入库前拆开，否则整段推理会被当成剧情输出。
+THINK_BLOCK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL | re.IGNORECASE)
+THINK_UNCLOSED_RE = re.compile(r"<think>(.*)\Z", re.DOTALL | re.IGNORECASE)
+
+
+def _split_thinking(text):
+    """把 content 拆成 (正文, 思维链)。
+
+    - 闭合块 <think>...</think>：块内归入思维链，块外保留为正文。
+    - 未闭合 <think>：从开标签到文本末尾全部视为思维链（模型被输出长度截断的
+      典型形态），正文只保留开标签之前的部分。
+    """
+    if not text:
+        return "", ""
+    parts = []
+
+    def _take(m):
+        parts.append(m.group(1))
+        return ""
+
+    narrative = THINK_BLOCK_RE.sub(_take, text)
+    m = THINK_UNCLOSED_RE.search(narrative)
+    if m:
+        parts.append(m.group(1))
+        narrative = narrative[:m.start()]
+    thinking = "\n\n".join(p.strip() for p in parts if p and p.strip())
+    return narrative.strip(), thinking
+
+
+def _process_response_content(raw_content, adapter_thinking_only=False):
+    """归一化一次响应：拆思维链 → 判暂停 → 剥同步标记。
+
+    返回 (content, thinking, is_pause, is_thinking_only)。
+    协议判定只作用于剥离思维链后的正文，避免推理文本里提到的
+    {{_NEED_AN_OTHER_PROMPT}} 干扰协议（本地模型常在推理中复述协议）。
+    """
+    narrative, thinking = _split_thinking(raw_content)
+    if _is_pure_pause_token(narrative):
+        return "", thinking, True, False
+    content = _strip_pause_tokens(narrative)
+    # 适配器自报的 thinking_only，或引擎剥离后正文为空但确实产出了思维链
+    is_thinking_only = bool(adapter_thinking_only) or (bool(thinking) and not content)
+    return content, thinking, False, is_thinking_only
 
 
 TIMELINE_PROMPT = """SYSTEM INSTRUCTION: You have just completed several rounds of gameplay.
@@ -271,6 +329,8 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
 
     player_path = os.path.splitext(wwf_path)[0] + ".player"
     timeline_path = os.path.splitext(wwf_path)[0] + ".timeline.md"
+    session_path = os.path.splitext(wwf_path)[0] + ".session.json"
+    history_path = os.path.splitext(wwf_path)[0] + ".history.json"
 
     # ── Debug logging setup (--debug) ─────────────────────────────
     # All interaction/output is recorded to a per-session log file in output/.
@@ -298,6 +358,30 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
     with open(wwf_path, "r", encoding="utf-8") as f:
         key_content = f.read()
 
+    # Last known-good snapshot, refreshed on every live autosave. The OUTER
+    # finally runs after the MCP subprocess has already exited, so that path can
+    # only rewrite what was cached here — it must never talk to the dice server.
+    _cache = {"player": None, "session": None, "history": None}
+
+    def _flush_cache():
+        """Write the cached snapshot to disk. Sync, and never raises."""
+        written = []
+        try:
+            for key, path in (("player", player_path),
+                              ("session", session_path),
+                              ("history", history_path)):
+                if _cache[key] is None:
+                    continue
+                if savemgr.atomic_write_json(path, _cache[key], MAX_BACKUPS):
+                    written.append(os.path.basename(path))
+            if written and VERBOSE:
+                console.print(
+                    f"[dim]{tr('save.autosave', files=', '.join(written))}[/dim]")
+            dbg("AUTO-SAVE (flush)", {"written": written})
+        except Exception as e:
+            dbg("AUTO-SAVE FLUSH ERROR", str(e))
+        return written
+
     try:
         dice_server_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), "dice_server.py"
@@ -322,30 +406,64 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
                         }
                     })
 
-                # ── Load session timeline ─────────────────────────────
+                # ── Restore persisted session state ────────────────────
                 existing_timeline = load_timeline(timeline_path)
                 round_counter = 0
                 narrative_counter = 0
 
-                # Single system message = GM protocol + optional language directive.
-                # Most adapters cache the LAST system message they see, so a second
-                # system message would REPLACE the protocol — always concatenate.
+                # The combat registry lives in the dice server's memory, so push
+                # the last snapshot back in before the first GM turn.
+                combatants_restored = 0
+                saved_session = savemgr.safe_load_json(session_path, _MISSING)
+                if isinstance(saved_session, dict):
+                    try:
+                        result = await session.call_tool(
+                            "import_session_state", {"state": saved_session})
+                        text = "\n".join(b.text for b in result.content
+                                         if hasattr(b, "text"))
+                        payload = json.loads(text) if text else {}
+                        combatants_restored = payload.get("restored", 0)
+                    except Exception as e:
+                        dbg("SESSION RESTORE ERROR", str(e))
+                        console.print(f"[yellow]{tr('save.session_fail')}[/yellow]")
+                elif saved_session is not _MISSING:
+                    console.print(f"[yellow]{tr('save.session_fail')}[/yellow]")
+
+                # Replay the tail of the previous conversation. This must happen
+                # before the first chat_fn call: the incremental adapters walk
+                # `messages` from index 0 on their first invocation.
+                raw_history = savemgr.safe_load_json(history_path, _MISSING)
+                if isinstance(raw_history, list):
+                    restored_turns = savemgr.fit_history_bytes(
+                        savemgr.strip_system(raw_history))
+                else:
+                    if raw_history is not _MISSING:
+                        console.print(f"[yellow]{tr('save.history_fail')}[/yellow]")
+                    restored_turns = []
+                if restored_turns and VERBOSE:
+                    console.print(f"[dim]{tr('save.restored', msgs=len(restored_turns), npcs=combatants_restored)}[/dim]")
+
+                # Single system message = GM protocol + language directive +
+                # timeline. Most adapters cache the LAST system message they see
+                # (e.g. play_with_gpt.py assigns `system_instruction = content`),
+                # so a second system message REPLACES the protocol. The timeline
+                # used to be appended as one, silently dropping the GM protocol
+                # on every resumed session — always concatenate instead.
                 system_content = lock_content
                 if i18n.get_lang() == "zh":
                     system_content = lock_content + "\n\n" + ZH_DIRECTIVE
-                messages = [
-                    {"role": "system", "content": system_content}
-                ]
                 if existing_timeline:
-                    messages.append({
-                        "role": "system",
-                        "content": f"""SESSION_TIMELINE — these are events that happened earlier this session.
+                    system_content += f"""
+
+SESSION_TIMELINE — these are events that happened earlier this session.
 Refer to them when the player asks about past events. Do not replay or re-describe them.
 
 {existing_timeline}"""
-                    })
                     if VERBOSE:
                         console.print(f"[dim]Timeline loaded: {timeline_path} ({len(existing_timeline)} chars)[/dim]")
+
+                messages = [{"role": "system", "content": system_content}]
+                messages.extend(restored_turns)
 
                 current_context_tokens = 0
 
@@ -384,19 +502,24 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         response_msg = response['message']
                         raw_content = response_msg['content'] if response_msg else ""
 
-                        # ── 暂停 / checkpoint token 处理（fix A）──
-                        # 仅当 content 去掉空白后「恰好等于」token（独立出现）才暂停；
-                        # 内联 token 必须剥离后当作正常剧情，且不入历史。
-                        if _is_pure_pause_token(raw_content):
+                        # ── 思维链 + 暂停 / checkpoint token 处理 ──────────
+                        # 先拆掉 <think> 思维链（本地模型常内联写入且可能不闭合），
+                        # 协议判定只作用于剥离后的正文 —— 否则推理文本里复述的
+                        # {{_NEED_AN_OTHER_PROMPT}} 会污染协议判定。
+                        content, thinking, is_pause, is_thinking_only = _process_response_content(
+                            raw_content, response.get('thinking_only'))
+
+                        if is_pause:
                             if DEBUG:
                                 console.print("[bold yellow]DEBUG: Checkpoint token detected. Pausing...[/bold yellow]")
                             dbg("CHECKPOINT", "{{_NEED_AN_OTHER_PROMPT}} detected — pausing for resume token")
                             return "__SYSTEM_PAUSE__"
 
-                        # 剥离内联 token，避免泄漏到历史 / 渲染。
-                        content = _strip_pause_tokens(raw_content)
-                        if raw_content and content != raw_content.strip():
-                            dbg("GM OUTPUT (token stripped)", content)
+                        # 只记摘要，不重复正文（正文由下方 GM OUTPUT 统一记录一份）。
+                        if thinking or (raw_content and content != raw_content.strip()):
+                            dbg("GM OUTPUT (cleaned)",
+                                f"thinking={len(thinking)} chars; "
+                                f"content {len(raw_content)} -> {len(content)} chars")
 
                         msg_entry = {
                             "role": "assistant",
@@ -404,13 +527,18 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         }
                         if response_msg.get('tool_calls'):
                             msg_entry["tool_calls"] = response_msg['tool_calls']
-                        if response.get('thinking'):
-                            msg_entry["thinking"] = response['thinking']
+                        # 回填 thinking：DeepSeek 依赖 msg["thinking"] 回显为
+                        # reasoning_content；本地模型的思维链也一并保留以便审计。
+                        _merged_thinking = "\n\n".join(
+                            p for p in (response.get('thinking') or "", thinking)
+                            if p and p.strip())
+                        if _merged_thinking:
+                            msg_entry["thinking"] = _merged_thinking
                         messages.append(msg_entry)
 
                         thinking_retries = 0
                         MAX_THINKING_RETRIES = 3
-                        while response.get('thinking_only') and thinking_retries < MAX_THINKING_RETRIES:
+                        while is_thinking_only and thinking_retries < MAX_THINKING_RETRIES:
                             thinking_retries += 1
                             if DEBUG:
                                 console.print(f"[bold yellow]DEBUG: Thinking-only response. Injecting 'Continue'... ({thinking_retries}/{MAX_THINKING_RETRIES})[/bold yellow]")
@@ -433,12 +561,13 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                     ))
                             response_msg = response['message']
                             _raw = response_msg['content'] if response_msg else ""
-                            if _is_pure_pause_token(_raw):
+                            content, thinking, is_pause, is_thinking_only = _process_response_content(
+                                _raw, response.get('thinking_only'))
+                            if is_pause:
                                 if DEBUG:
                                     console.print("[bold yellow]DEBUG: Checkpoint token detected (post-thinking). Pausing...[/bold yellow]")
                                 dbg("CHECKPOINT", "{{_NEED_AN_OTHER_PROMPT}} detected after thinking — pausing")
                                 return "__SYSTEM_PAUSE__"
-                            content = _strip_pause_tokens(_raw)
                             messages.append({
                                 "role": "assistant",
                                 "content": content,
@@ -448,7 +577,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 "content": content,
                             })
 
-                        if response.get('thinking_only') and thinking_retries >= MAX_THINKING_RETRIES:
+                        if is_thinking_only and thinking_retries >= MAX_THINKING_RETRIES:
                             dbg("GM OUTPUT (deep thought)", tr('gm.deep_thought'))
                             return tr('gm.deep_thought')
 
@@ -570,43 +699,26 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         await chat_with_tools("{{_SYNC_DATABASE}}")
                         console.print(Panel(f"[green]{tr('sync.done')}[/green]", border_style="green", expand=False))
                     elif cmd == '/save':
+                        # Pure snapshot: no buff revert, no state mutation. The
+                        # old version rolled active effects back as part of
+                        # saving, which made it unsafe to call automatically.
+                        # Long-rest settlement is the `rest` MCP tool's job now.
                         result = await session.call_tool("dump_player_db", arguments={})
+                        db_data = None
                         if hasattr(result, 'content') and result.content:
                             text = "\n".join(block.text for block in result.content if hasattr(block, "text"))
                             try:
                                 db_data = json.loads(text)
                             except (json.JSONDecodeError, TypeError):
-                                db_data = {}
-                            buff_data = db_data.get("_active_buff_data", {})
-                            if isinstance(buff_data, str):
-                                try:
-                                    buff_data = json.loads(buff_data)
-                                except (json.JSONDecodeError, TypeError):
-                                    buff_data = {}
-                            cleared = []
-                            for spell_name, entries in buff_data.items():
-                                for entry in entries:
-                                    field = entry["field"]
-                                    delta = entry["delta"]
-                                    if field == "temporary_hit_points":
-                                        db_data[field] = 0
-                                    else:
-                                        current_val = db_data.get(field, 0)
-                                        if isinstance(current_val, str):
-                                            try:
-                                                current_val = int(current_val)
-                                            except (ValueError, TypeError):
-                                                continue
-                                        db_data[field] = current_val - delta
-                                cleared.append(spell_name)
-                            db_data["active_effects"] = []
-                            db_data["_active_buff_data"] = {}
-                            with open(player_path, "w", encoding="utf-8") as f:
-                                json.dump(db_data, f, indent=2)
-                            msg = f"[green]{tr('save.done', path=player_path)}[/green]"
-                            if cleared:
-                                msg += f"\n[dim]{tr('save.reverted', names=', '.join(cleared))}[/dim]"
-                            console.print(Panel(msg, border_style="green", expand=False))
+                                db_data = None
+                        if db_data:
+                            if savemgr.atomic_write_json(player_path, db_data, MAX_BACKUPS):
+                                _cache["player"] = db_data
+                                console.print(Panel(
+                                    f"[green]{tr('save.done', path=player_path)}[/green]",
+                                    border_style="green", expand=False))
+                            else:
+                                console.print(f"[red]{tr('save.fail')}[/red]")
                         else:
                             console.print(f"[red]{tr('save.fail')}[/red]")
                     elif cmd == '/quit':
@@ -641,6 +753,40 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                         console.print(f"[dim]{tr('cmd.hint_help')}[/dim]")
                     return None
 
+                async def _autosave(live=True):
+                    """Refresh the snapshot from the dice server, then flush it.
+
+                    live=False skips the refresh and replays the cache, for the
+                    shutdown path where MCP is already closed. A failed autosave
+                    must never take the game down, so every step is guarded.
+                    """
+                    try:
+                        if live:
+                            try:
+                                result = await session.call_tool("dump_player_db", {})
+                                text = "\n".join(b.text for b in result.content
+                                                 if hasattr(b, "text"))
+                                _cache["player"] = json.loads(text) if text else None
+                            except Exception:
+                                pass
+                            try:
+                                result = await session.call_tool("export_session_state", {})
+                                text = "\n".join(b.text for b in result.content
+                                                 if hasattr(b, "text"))
+                                payload = json.loads(text) if text else {}
+                            except Exception:
+                                payload = {}
+                            if payload:
+                                payload["round_counter"] = round_counter
+                                payload["narrative_counter"] = narrative_counter
+                                _cache["session"] = payload
+                            _cache["history"] = savemgr.strip_system(messages)
+                        _flush_cache()
+                    except Exception as e:
+                        dbg("AUTO-SAVE ERROR", str(e))
+                        if VERBOSE:
+                            console.print(f"[dim]{tr('save.autosave_fail', e=e)}[/dim]")
+
                 console.print(f"\n[yellow]{tr('inject.world')}[/yellow]")
                 if VERBOSE:
                     response_text = await chat_with_tools(key_content)
@@ -674,94 +820,100 @@ Refer to them when the player asks about past events. Do not replay or re-descri
 
                 console.print(f"\n[bold cyan]{tr('game.started')}[/bold cyan]\n")
 
-                while True:
-                    if VERBOSE or DEBUG:
-                        console.print(f"[dim]Context: {current_context_tokens:,} / {context_window:,} tokens[/dim]")
-                    user_input = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("prompt.action")}</b></ansicyan> '))
-                    user_input = user_input.strip()
+                try:
+                    while True:
+                        if VERBOSE or DEBUG:
+                            console.print(f"[dim]Context: {current_context_tokens:,} / {context_window:,} tokens[/dim]")
+                        user_input = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("prompt.action")}</b></ansicyan> '))
+                        user_input = user_input.strip()
 
-                    if not user_input:
-                        continue
+                        if not user_input:
+                            continue
 
-                    dbg("USER INPUT", user_input)
+                        dbg("USER INPUT", user_input)
 
-                    if user_input.startswith('/'):
-                        dbg("COMMAND", user_input)
-                        result = await handle_slash_command(user_input)
+                        if user_input.startswith('/'):
+                            dbg("COMMAND", user_input)
+                            result = await handle_slash_command(user_input)
+                            if DEBUG_LOG is not None:
+                                DEBUG_LOG.save()
+                            if result == 'quit':
+                                # The try/finally below performs the live save.
+                                console.print(f"[yellow]{tr('quit.goodbye')}[/yellow]")
+                                break
+                            await _autosave(live=True)
+                            continue
+
+                        try:
+                            if VERBOSE:
+                                gm_response = await chat_with_tools(user_input)
+                            else:
+                                with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
+                                    gm_response = await chat_with_tools(user_input)
+                        except KeyboardInterrupt:
+                            console.print(f"\n[yellow]{tr('game.interrupted')}[/yellow]")
+                            continue
+                        except Exception as e:
+                            dbg("GM ERROR", str(e))
+                            console.print(f"[bold red]{tr('gm.error', e=e)}[/bold red]")
+                            continue
+
+                        # ── 恢复循环 + 安全上限（fix B）──
+                        resume_count = 0
+                        while gm_response == "__SYSTEM_PAUSE__":
+                            resume_count += 1
+                            if resume_count > MAX_RESUMES:
+                                await _emit_narrative(tr('gm.resume_fallback'), title=tr('gm.title'))
+                                gm_response = None
+                                break
+                            if DEBUG:
+                                console.print("[bold cyan]DEBUG: Injecting Resume Token ({{_CONTINUE_EXECUTION}})[/bold cyan]")
+                            dbg("RESUME", "Injected {{_CONTINUE_EXECUTION}}")
+                            if VERBOSE:
+                                gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
+                            else:
+                                with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
+                                    gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
+
+                        # ── 渲染该回合剧情段（fix C，已含按段图像）──
+                        if gm_response and gm_response != "__SYSTEM_PAUSE__":
+                            clean_response = _strip_pause_tokens(gm_response)
+                            if clean_response:
+                                await _emit_narrative(clean_response, title=tr('gm.title'))
+
+                            # ── Timeline checkpoint ────────────────────────
+                            round_counter += 1
+                            if round_counter % TIMELINE_INTERVAL == 0:
+                                if VERBOSE:
+                                    console.print(f"\n[dim]⏳ Timeline checkpoint (round {round_counter})...[/dim]")
+                                try:
+                                    # Calculate round range for this entry
+                                    start_round = round_counter - TIMELINE_INTERVAL + 1
+                                    prompt = TIMELINE_PROMPT.replace("X-Y", f"{start_round}-{round_counter}")
+                                    tl_response = await chat_with_tools(prompt)
+                                    if tl_response and tl_response != "__SYSTEM_PAUSE__":
+                                        # Clean up sync tokens from timeline entry
+                                        entry = _strip_pause_tokens(tl_response)
+                                        if entry and "**Key Events**" in entry:
+                                            append_timeline_file(timeline_path, entry)
+                                            dbg("TIMELINE ENTRY", entry)
+                                            if VERBOSE:
+                                                console.print(f"[dim]✅ Timeline saved ({len(entry)} chars)[/dim]")
+                                        elif VERBOSE:
+                                            console.print(f"[dim]⚠️ Timeline entry missing Key Events — skipped[/dim]")
+                                except Exception as e:
+                                    dbg("TIMELINE ERROR", str(e))
+                                    if VERBOSE:
+                                        console.print(f"[dim]⚠️ Timeline checkpoint failed: {e}[/dim]")
+
+                        # Round-end auto-save: flush the debug log, then
+                        # snapshot the game so that closing the window - not
+                        # just /quit - keeps the latest round.
                         if DEBUG_LOG is not None:
                             DEBUG_LOG.save()
-                        if result == 'quit':
-                            console.print(f"[yellow]{tr('quit.goodbye')}[/yellow]")
-                            break
-                        continue
-
-                    try:
-                        if VERBOSE:
-                            gm_response = await chat_with_tools(user_input)
-                        else:
-                            with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
-                                gm_response = await chat_with_tools(user_input)
-                    except KeyboardInterrupt:
-                        console.print(f"\n[yellow]{tr('game.interrupted')}[/yellow]")
-                        continue
-                    except Exception as e:
-                        dbg("GM ERROR", str(e))
-                        console.print(f"[bold red]{tr('gm.error', e=e)}[/bold red]")
-                        continue
-
-                    # ── 恢复循环 + 安全上限（fix B）──
-                    resume_count = 0
-                    while gm_response == "__SYSTEM_PAUSE__":
-                        resume_count += 1
-                        if resume_count > MAX_RESUMES:
-                            await _emit_narrative(tr('gm.resume_fallback'), title=tr('gm.title'))
-                            gm_response = None
-                            break
-                        if DEBUG:
-                            console.print("[bold cyan]DEBUG: Injecting Resume Token ({{_CONTINUE_EXECUTION}})[/bold cyan]")
-                        dbg("RESUME", "Injected {{_CONTINUE_EXECUTION}}")
-                        if VERBOSE:
-                            gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
-                        else:
-                            with console.status(f"[bold blue]{tr('gm.thinking')}[/bold blue]"):
-                                gm_response = await chat_with_tools("{{_CONTINUE_EXECUTION}}")
-
-                    # ── 渲染该回合剧情段（fix C，已含按段图像）──
-                    if gm_response and gm_response != "__SYSTEM_PAUSE__":
-                        clean_response = _strip_pause_tokens(gm_response)
-                        if clean_response:
-                            await _emit_narrative(clean_response, title=tr('gm.title'))
-
-                        # ── Timeline checkpoint ────────────────────────
-                        round_counter += 1
-                        if round_counter % TIMELINE_INTERVAL == 0:
-                            if VERBOSE:
-                                console.print(f"\n[dim]⏳ Timeline checkpoint (round {round_counter})...[/dim]")
-                            try:
-                                # Calculate round range for this entry
-                                start_round = round_counter - TIMELINE_INTERVAL + 1
-                                prompt = TIMELINE_PROMPT.replace("X-Y", f"{start_round}-{round_counter}")
-                                tl_response = await chat_with_tools(prompt)
-                                if tl_response and tl_response != "__SYSTEM_PAUSE__":
-                                    # Clean up sync tokens from timeline entry
-                                    entry = _strip_pause_tokens(tl_response)
-                                    if entry and "**Key Events**" in entry:
-                                        append_timeline_file(timeline_path, entry)
-                                        dbg("TIMELINE ENTRY", entry)
-                                        if VERBOSE:
-                                            console.print(f"[dim]✅ Timeline saved ({len(entry)} chars)[/dim]")
-                                    elif VERBOSE:
-                                        console.print(f"[dim]⚠️ Timeline entry missing Key Events — skipped[/dim]")
-                            except Exception as e:
-                                dbg("TIMELINE ERROR", str(e))
-                                if VERBOSE:
-                                    console.print(f"[dim]⚠️ Timeline checkpoint failed: {e}[/dim]")
-
-                    # Round-end auto-save (debug mode): persist the log now so
-                    # that closing the window - not just /quit - keeps the
-                    # latest round. See DebugLogger.save().
-                    if DEBUG_LOG is not None:
-                        DEBUG_LOG.save()
+                        await _autosave(live=True)
+                finally:
+                    await _autosave(live=True)
 
     except KeyboardInterrupt:
         console.print(f"\n[yellow]{tr('game.bye')}[/yellow]")
@@ -771,6 +923,13 @@ Refer to them when the player asks about past events. Do not replay or re-descri
         console.print(f"\n[bold red]{tr('game.fatal', e=e)}[/bold red]")
         console.print(f"[dim]{tr('game.ended')}[/dim]")
     finally:
+        # The MCP subprocess is gone by now, so this can only replay the last
+        # cached snapshot — still worth doing, because a crash mid-turn would
+        # otherwise lose everything since the previous round-end save.
+        try:
+            _flush_cache()
+        except Exception:
+            pass
         if DEBUG_LOG is not None:
             dbg("SESSION END", {"reason": "see log above"})
             DEBUG_LOG.close()

@@ -55,7 +55,11 @@ DEFAULT_BASE_URL = "http://localhost:5001/v1"
 DEFAULT_MODEL = "koboldcpp"
 DEFAULT_API_KEY = "not-needed"
 DEFAULT_TEMP = 0.0
-DEFAULT_MAX_OUTPUT_TOKENS = 8192
+# Kept deliberately modest: a local model that runs away mid-<think> used to burn
+# 8192 tokens (several minutes) before being cut off. A single D&D beat rarely
+# exceeds ~1500 tokens, so 2048 leaves headroom without paying for runaway
+# generation. Raise with --max-output-tokens if you need longer scenes.
+DEFAULT_MAX_OUTPUT_TOKENS = 2048
 # Local models rarely tolerate the million-token windows of cloud models; keep
 # this realistic so the in-game token counter is meaningful. Override as needed.
 # When --context-window is not given, we query the KoboldCpp backend for its

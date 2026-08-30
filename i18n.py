@@ -130,7 +130,7 @@ _STRINGS = {
         "en": ("[bold white]Available Commands:[/bold white]\n\n"
                "  [cyan]/help[/cyan]  - Show this help message\n"
                "  [cyan]/stats[/cyan] - Display current player stats\n"
-               "  [cyan]/save[/cyan]  - Overwrite your .player file with your current character sheet (active effects are cleared/reverted)\n"
+               "  [cyan]/save[/cyan]  - Save a snapshot of your character sheet now (active effects are kept); auto-saves every round\n"
                "  [cyan]/sync[/cyan]  - Force a database sync with the GM\n"
                "  [cyan]/lang[/cyan]  - Switch interface language (/lang en, /lang zh)\n"
                "  [cyan]/quit[/cyan]  - Exit the game\n\n"
@@ -138,7 +138,7 @@ _STRINGS = {
         "zh": ("[bold white]可用指令：[/bold white]\n\n"
                "  [cyan]/help[/cyan]  - 显示本帮助\n"
                "  [cyan]/stats[/cyan] - 显示当前角色状态\n"
-               "  [cyan]/save[/cyan]  - 将当前角色卡写回 .player 文件（生效中的效果会被清除/还原）\n"
+               "  [cyan]/save[/cyan]  - 立即保存角色卡快照（保留生效效果）；每回合自动存档\n"
                "  [cyan]/sync[/cyan]  - 强制与 GM 进行数据库同步\n"
                "  [cyan]/lang[/cyan]  - 切换界面语言（/lang en、/lang zh）\n"
                "  [cyan]/quit[/cyan]  - 退出游戏\n\n"
@@ -148,10 +148,18 @@ _STRINGS = {
     "sync.done":       {"en": "Database synchronized.", "zh": "数据库已同步。"},
     "save.done":       {"en": "Character sheet saved to {path}",
                         "zh": "角色卡已保存到 {path}"},
-    "save.reverted":   {"en": "Reverted effects for save: {names}",
-                        "zh": "存档时已还原的效果：{names}"},
     "save.fail":       {"en": "Save failed — could not read database.",
                         "zh": "保存失败——无法读取数据库。"},
+    "save.autosave":   {"en": "Auto-saved: {files}",
+                        "zh": "已自动存档：{files}"},
+    "save.autosave_fail": {"en": "Auto-save failed: {e}",
+                           "zh": "自动存档失败：{e}"},
+    "save.restored":   {"en": "Restored {msgs} messages and {npcs} combatants from your last session.",
+                        "zh": "已恢复上次会话的 {msgs} 条对话与 {npcs} 名战斗参与者。"},
+    "save.session_fail": {"en": "Session file unreadable — starting a fresh session.",
+                          "zh": "会话文件无法读取，将开始新会话。"},
+    "save.history_fail": {"en": "History file unreadable — starting from the timeline only.",
+                          "zh": "对话历史无法读取，将仅从剧情摘要继续。"},
     "cmd.unknown":     {"en": "Unknown command: {cmd}", "zh": "未知指令：{cmd}"},
     "cmd.hint_help":   {"en": "Type /help for available commands.",
                         "zh": "输入 /help 查看可用指令。"},
