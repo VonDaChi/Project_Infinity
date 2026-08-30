@@ -23,6 +23,8 @@ _DEFAULTS = {
     "port": DEFAULT_PORT,
     "pin": "",
     "backend": "ollama",
+    # Set to false on a headless box, or the browser launch is just noise.
+    "open_browser": True,
     "backends": {},
 }
 

@@ -9,6 +9,9 @@ import asyncio
 import os
 import socket
 import sys
+import threading
+import time
+import webbrowser
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
@@ -260,6 +263,27 @@ def _local_addresses():
     return sorted(found)
 
 
+def _open_browser_when_ready(port, timeout=15.0):
+    """Fire the OS default browser once the server actually accepts connections.
+
+    uvicorn binds the port asynchronously, so opening too early hits a dead
+    socket. A short probe loop waits for the listener before calling out.
+    """
+    url = f"http://127.0.0.1:{port}/"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                try:
+                    webbrowser.open(url)
+                except Exception:
+                    pass  # headless / no default browser: URL is already printed
+                return
+        except OSError:
+            time.sleep(0.25)
+    # Give up silently — the URL is already printed for the user to click.
+
+
 def main():
     cfg = app.state.cfg
     host = cfg.get("host") or config.DEFAULT_HOST
@@ -279,6 +303,11 @@ def main():
     print()
     print("  按 Ctrl+C 停止服务")
     print()
+
+    if str(cfg.get("open_browser", True)).lower() not in ("0", "false", "no", "off"):
+        threading.Thread(
+            target=_open_browser_when_ready, args=(port,), daemon=True
+        ).start()
 
     uvicorn.run(app, host=host, port=port, log_level="warning")
 

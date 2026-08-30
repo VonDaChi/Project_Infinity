@@ -28,7 +28,8 @@ if not exist "%PYEXE%" (
 )
 
 cd /d "%ROOT%"
-"%PYEXE%" -m webui
+REM 内嵌 Python 为隔离模式，cwd 不在 sys.path，故用脚本式入口而非 -m webui
+"%PYEXE%" webui\__main__.py
 
 echo.
 echo 服务已停止。
