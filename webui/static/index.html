@@ -114,6 +114,10 @@
       <label>服务地址</label>
       <input id="startUrl" placeholder="http://localhost:5001/v1">
     </div>
+    <div class="field" id="startMotField">
+      <label>最大生成长度 (max_output_tokens)</label>
+      <input id="startMot" type="number" min="1" max="200000" step="1" placeholder="默认 16384">
+    </div>
     <div class="field">
       <label>温度 <span id="startTempVal"></span></label>
       <input id="startTemp" type="range" min="0" max="2" step="0.1">
@@ -145,6 +149,10 @@
     <div class="field" id="setUrlField">
       <label>服务地址</label>
       <input id="setUrl" placeholder="http://localhost:5001/v1">
+    </div>
+    <div class="field" id="setMotField">
+      <label>最大生成长度 (max_output_tokens)</label>
+      <input id="setMot" type="number" min="1" max="200000" step="1" placeholder="默认 16384">
     </div>
     <div class="field">
       <label>温度 <span id="setTempVal"></span></label>

@@ -453,19 +453,27 @@ function fillBackendForm(ids, backendId) {
     ? Number(spec.options.temperature) : 0;
   $(ids.temp).value = t;
   $(ids.tempVal).textContent = t.toFixed(1);
-  $(ids.keyField).style.display = spec.needs_key ? '' : 'none';
-  $(ids.urlField).style.display = spec.id === 'kobold' ? '' : 'none';
+  $(ids.mot).value = (spec.options && spec.options.max_output_tokens != null)
+    ? spec.options.max_output_tokens : '';
+  const fields = spec.fields || [];
+  // api_key: hidden only when the backend neither requires nor offers it.
+  $(ids.keyField).style.display =
+    (spec.needs_key || fields.includes('api_key')) ? '' : 'none';
+  $(ids.urlField).style.display = fields.includes('base_url') ? '' : 'none';
+  $(ids.motField).style.display = fields.includes('max_output_tokens') ? '' : 'none';
 }
 
 const START_IDS = {
   backend: 'startBackend', model: 'startModel', key: 'startKey', url: 'startUrl',
+  mot: 'startMot', motField: 'startMotField',
   temp: 'startTemp', tempVal: 'startTempVal',
   keyField: 'startKeyField', urlField: 'startUrlField',
 };
 const SET_IDS = {
   backend: 'setBackend', model: 'setModel', key: 'setKey', url: 'setUrl',
+  mot: 'setMot',
   temp: 'setTemp', tempVal: 'setTempVal',
-  keyField: 'setKeyField', urlField: 'setUrlField',
+  keyField: 'setKeyField', urlField: 'setUrlField', motField: 'setMotField',
 };
 
 function openStart(worldFile) {
@@ -484,12 +492,16 @@ function openStart(worldFile) {
 
 async function startSession() {
   const backend = $('startBackend').value;
+  const spec = (state.backends || []).find((b) => b.id === backend);
+  const fields = (spec && spec.fields) || [];
   const options = {
     model: $('startModel').value,
     temperature: parseFloat($('startTemp').value),
   };
-  if ($('startKey').value) options.api_key = $('startKey').value;
-  if (backend === 'kobold' && $('startUrl').value) options.base_url = $('startUrl').value;
+  if (fields.includes('api_key') && $('startKey').value) options.api_key = $('startKey').value;
+  if (fields.includes('base_url') && $('startUrl').value) options.base_url = $('startUrl').value;
+  if (fields.includes('max_output_tokens') && $('startMot').value)
+    options.max_output_tokens = parseInt($('startMot').value, 10);
 
   const res = await fetch('/api/session', {
     method: 'POST',
@@ -520,13 +532,17 @@ async function stopSession() {
 
 async function saveSettings() {
   const id = $('setBackend').value;
+  const spec = (state.backends || []).find((b) => b.id === id);
+  const fields = (spec && spec.fields) || [];
   const body = {
     model: $('setModel').value,
     temperature: parseFloat($('setTemp').value),
     select: true,
   };
-  if ($('setKey').value) body.api_key = $('setKey').value;
-  if (id === 'kobold') body.base_url = $('setUrl').value;
+  if (fields.includes('api_key')) body.api_key = $('setKey').value;
+  if (fields.includes('base_url')) body.base_url = $('setUrl').value;
+  if (fields.includes('max_output_tokens') && $('setMot').value)
+    body.max_output_tokens = parseInt($('setMot').value, 10);
 
   const res = await fetch(`/api/backends/${id}`, {
     method: 'POST',

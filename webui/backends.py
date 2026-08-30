@@ -63,12 +63,15 @@ BACKENDS = {
         "module": "play_with_kobold",
         "factory": "create_kobold_chat_fn",
         "needs_key": False,
-        "fields": ["base_url", "temperature"],
+        "fields": ["base_url", "api_key", "max_output_tokens", "temperature"],
     },
 }
 
 DEFAULT_BACKEND = "ollama"
 FALLBACK_CONTEXT_WINDOW = 8192
+# Local / OpenAI-compatible servers (kobold) have no max_output_tokens default
+# in their factory; gpt/claude default to 16384, so we match that convention.
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
 
 class BackendError(Exception):
@@ -126,6 +129,15 @@ def build_chat_fn(backend_id, options, debug=False):
     # kobold's factory takes the context window directly; everyone else ignores it.
     kwargs["context_window"] = context_window_for(backend_id, model)
     kwargs["debug"] = debug
+    # Local / OpenAI-compatible servers (kobold) accept any non-empty key; when the
+    # registry says no key is needed, inject a harmless placeholder so the OpenAI
+    # client is happy. Backends that don't accept api_key ignore it (the signature
+    # filter below drops it).
+    if not spec["needs_key"] and not kwargs.get("api_key"):
+        kwargs["api_key"] = "not-needed"
+    # max_output_tokens: supply a sane default for factories without one (kobold's
+    # factory has no default). Backends that don't accept it ignore it via the filter.
+    kwargs.setdefault("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
 
     signature = inspect.signature(factory)
     accepted = {k: v for k, v in kwargs.items() if k in signature.parameters}
@@ -147,10 +159,14 @@ def describe(cfg):
     for backend_id, spec in BACKENDS.items():
         stored = config.backend_options(cfg, backend_id)
         options = {"temperature": default_temperature(backend_id)}
-        if spec["needs_key"]:
+        # Show a field whenever the backend advertises it. api_key is required
+        # only when needs_key is True; otherwise it stays optional (may be empty).
+        if "api_key" in spec["fields"]:
             options["api_key"] = ""
-        if backend_id == "kobold":
+        if "base_url" in spec["fields"]:
             options["base_url"] = "http://localhost:5001/v1"
+        if "max_output_tokens" in spec["fields"]:
+            options["max_output_tokens"] = DEFAULT_MAX_OUTPUT_TOKENS
         options["model"] = default_model(backend_id)
         options.update({k: v for k, v in stored.items() if v not in (None, "")})
 
