@@ -608,6 +608,11 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                                 )
                                 dbg("TOOL RESULT ←", tool_result_text)
 
+                                # Structured dice/tool event for the WebUI. The
+                                # terminal ignores it (GameIO base class no-ops);
+                                # it only prints these under --verbose.
+                                await io.emit_tool(tool_name, tool_args, tool_result_text)
+
                                 if VERBOSE:
                                     console.print(f"[dim]   → {result.content}[/dim]")
 
@@ -681,6 +686,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     console.print("\n")
                     nonlocal narrative_counter
                     narrative_counter += 1
+                    await io.emit_narrative(text, title)
                     if image_gen_fn and image_frequency > 0 and narrative_counter % image_frequency == 0:
                         await _auto_generate_image(text)
 
@@ -697,6 +703,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             except (json.JSONDecodeError, TypeError):
                                 db_data = text
                             if isinstance(db_data, dict):
+                                await io.emit_stats(db_data)
                                 for panel in format_stats(db_data):
                                     console.print(panel)
                             else:
@@ -788,8 +795,17 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                             if payload:
                                 payload["round_counter"] = round_counter
                                 payload["narrative_counter"] = narrative_counter
+                                payload["context_tokens"] = current_context_tokens
+                                payload["context_window"] = context_window
                                 _cache["session"] = payload
                             _cache["history"] = savemgr.strip_system(messages)
+                            # Push the refreshed sheet to the browser every
+                            # round. Guarded for the same reason as the rest of
+                            # this function: a UI update must never break a save.
+                            try:
+                                await io.emit_stats(_cache.get("player"), payload)
+                            except Exception:
+                                pass
                         _flush_cache()
                     except Exception as e:
                         dbg("AUTO-SAVE ERROR", str(e))

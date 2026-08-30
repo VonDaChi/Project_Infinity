@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Project Infinity</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <span class="brand">Project Infinity</span>
+    <span class="brand-sub" id="worldName"></span>
+    <span class="header-spacer"></span>
+    <span class="pill" id="backendPill">—</span>
+    <span class="pill" id="addrPill">—</span>
+    <span class="status" id="connStatus"><span class="dot"></span><span id="connText">连接中</span></span>
+    <button id="btnSettings">设置</button>
+    <button id="btnStart" class="primary">开始</button>
+    <button id="btnQuit" disabled>结束</button>
+  </header>
+
+  <div class="mobile-tabs">
+    <button data-drawer="sidebar">世界</button>
+    <button data-drawer="chat">剧情</button>
+    <button data-drawer="panel">角色</button>
+  </div>
+
+  <main>
+    <aside id="sidebar">
+      <p class="section-label">世界档案</p>
+      <div id="worldList"></div>
+      <p class="section-label spaced">上下文占用</p>
+      <div class="bar"><i id="ctxBar" style="width:0%"></i></div>
+      <div class="panel-foot" id="ctxText">尚未开始</div>
+    </aside>
+
+    <section id="chat">
+      <div id="stream"></div>
+      <div id="composer">
+        <div class="composer-row">
+          <textarea id="input" rows="1" placeholder="等待 GM…" disabled></textarea>
+          <button id="send" title="发送" disabled>&#8599;</button>
+        </div>
+        <div class="hint-row">
+          <button class="chip" data-cmd="/stats">/stats</button>
+          <button class="chip" data-cmd="/save">/save</button>
+          <button class="chip" data-cmd="/sync">/sync</button>
+          <button class="chip" data-cmd="/help">/help</button>
+          <span class="tip">Enter 发送 · Shift+Enter 换行</span>
+        </div>
+      </div>
+    </section>
+
+    <aside id="panel">
+      <div class="char-head">
+        <div class="avatar" id="avatar">?</div>
+        <div>
+          <div class="char-name" id="charName">未载入</div>
+          <div class="char-sub" id="charSub">—</div>
+        </div>
+      </div>
+      <div class="bar-label"><span>生命值</span><span id="hpText">—</span></div>
+      <div class="bar" id="hpBar"><i style="width:0%"></i></div>
+      <div class="stat-grid" id="quickStats"></div>
+      <p class="section-label">属性值</p>
+      <div class="stat-grid three" id="abilities"></div>
+      <p class="section-label spaced">战斗追踪</p>
+      <div id="combat"></div>
+      <div class="panel-foot" id="saveFoot">自动存档 · 每回合</div>
+    </aside>
+
+    <div id="scrim" class="drawer-scrim hidden"></div>
+  </main>
+</div>
+
+<div id="login" class="overlay hidden">
+  <div class="card">
+    <h2>需要 PIN</h2>
+    <p class="sub">PIN 显示在启动 WebUI 的那个控制台窗口里。</p>
+    <div class="field">
+      <input class="pin-input" id="pinInput" type="password" inputmode="text" autocomplete="off" placeholder="······">
+    </div>
+    <div class="error-text" id="pinError"></div>
+    <div class="card-actions">
+      <button class="primary" id="pinSubmit">进入</button>
+    </div>
+  </div>
+</div>
+
+<div id="start" class="overlay hidden">
+  <div class="card">
+    <h2>开始游戏</h2>
+    <p class="sub">选择世界存档与模型后端。同一存档只能开一个会话。</p>
+    <div class="field">
+      <label>世界存档</label>
+      <select id="startWorld"></select>
+    </div>
+    <div class="field">
+      <label>后端</label>
+      <select id="startBackend"></select>
+    </div>
+    <div class="field">
+      <label>模型</label>
+      <select id="startModel"></select>
+    </div>
+    <div class="field" id="startKeyField">
+      <label>API key</label>
+      <input id="startKey" type="password" autocomplete="off" placeholder="留空则沿用已保存的值">
+    </div>
+    <div class="field" id="startUrlField">
+      <label>服务地址</label>
+      <input id="startUrl" placeholder="http://localhost:5001/v1">
+    </div>
+    <div class="field">
+      <label>温度 <span id="startTempVal"></span></label>
+      <input id="startTemp" type="range" min="0" max="2" step="0.1">
+    </div>
+    <div class="error-text" id="startError"></div>
+    <div class="card-actions">
+      <button id="startCancel">取消</button>
+      <button class="primary" id="startGo">开始</button>
+    </div>
+  </div>
+</div>
+
+<div id="settings" class="overlay hidden">
+  <div class="card">
+    <h2>设置</h2>
+    <p class="sub">后端参数保存在 config/webui.yml，该文件不会进入版本库。</p>
+    <div class="field">
+      <label>后端</label>
+      <select id="setBackend"></select>
+    </div>
+    <div class="field">
+      <label>模型</label>
+      <select id="setModel"></select>
+    </div>
+    <div class="field" id="setKeyField">
+      <label>API key</label>
+      <input id="setKey" type="password" autocomplete="off">
+    </div>
+    <div class="field" id="setUrlField">
+      <label>服务地址</label>
+      <input id="setUrl" placeholder="http://localhost:5001/v1">
+    </div>
+    <div class="field">
+      <label>温度 <span id="setTempVal"></span></label>
+      <input id="setTemp" type="range" min="0" max="2" step="0.1">
+    </div>
+    <div style="height:1px;background:var(--border);margin:18px 0"></div>
+    <div class="field">
+      <label>修改访问 PIN</label>
+      <input id="setPin" placeholder="留空则不修改">
+    </div>
+    <div class="error-text" id="setError"></div>
+    <div class="card-actions">
+      <button id="setCancel">关闭</button>
+      <button class="primary" id="setSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

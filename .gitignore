@@ -25,3 +25,6 @@ python_embeded/
 
 # Runtime user preferences (language, etc.)
 config/settings.yml
+
+# WebUI settings — holds API keys and the LAN access PIN
+config/webui.yml

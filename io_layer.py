@@ -37,6 +37,23 @@ class GameIO:
         """Release any resources held by this IO (sessions, sockets)."""
         pass
 
+    # ── Structured events ───────────────────────────────────────────────────
+    # Web consumers render these as widgets instead of text. The terminal has
+    # already printed the equivalent through the console, so the base class
+    # ignores them — the engine can call these unconditionally.
+
+    async def emit_narrative(self, text, title):
+        pass
+
+    async def emit_tool(self, name, arguments, result):
+        pass
+
+    async def emit_stats(self, db_data, combat=None):
+        pass
+
+    async def emit_status(self, text):
+        pass
+
 
 class TerminalIO(GameIO):
     """Prompt-toolkit prompt + rich console. Byte-identical to the old CLI.

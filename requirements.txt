@@ -7,3 +7,8 @@ prompt_toolkit>=3.0
 google-genai>=1.73,<3
 openai>=2.32,<4
 anthropic>=0.97.0,<2
+
+# WebUI (launch_webui.bat). Currently satisfied transitively via mcp, but the
+# web server imports them directly, so they are pinned here explicitly.
+starlette>=0.40
+uvicorn>=0.30
