@@ -7,8 +7,6 @@ import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.padding import Padding
-from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 # Ensure the project root (where display.py lives) is importable even when this
@@ -21,6 +19,7 @@ from display import format_stats, render_gm_text, render_image
 import i18n
 from i18n import tr
 import savemgr
+from io_layer import TerminalIO
 
 # Resolve data paths against the project root (this file's directory) rather
 # than the current working directory, so gameplay works regardless of where the
@@ -268,7 +267,7 @@ def get_wwf_files():
     return [f for f in os.listdir(OUTPUT_DIR) if f.endswith(".wwf")]
 
 
-async def select_wwf(input_session):
+async def select_wwf(io):
     files = get_wwf_files()
     if not files:
         console.print(f"[bold red]{tr('err.prefix')}[/bold red] {tr('err.no_wwf')}")
@@ -278,7 +277,7 @@ async def select_wwf(input_session):
     for i, f in enumerate(files):
         console.print(f"[cyan]{i+1}[/cyan] {f}")
 
-    choice = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("world.prompt")}</b></ansicyan> '))
+    choice = await io.read_input(tr("world.prompt"))
     try:
         idx = int(choice) - 1
         return os.path.join(OUTPUT_DIR, files[idx])
@@ -288,7 +287,7 @@ async def select_wwf(input_session):
 
 
 async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
-                   image_gen_fn=None, image_frequency=0):
+                   image_gen_fn=None, image_frequency=0, io=None, wwf_path=None):
     """
     Run the game loop.
 
@@ -306,10 +305,21 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
 
     Where each tool_calls entry is:
         {'function': {'name': str, 'arguments': dict}}
+
+    io       -- a GameIO instance supplying the console and the input source.
+                Defaults to TerminalIO, i.e. the unchanged CLI experience.
+    wwf_path -- preselect the world file and skip the interactive picker.
+                Web callers pass this; CLI callers leave it None.
     """
-    global VERBOSE, DEBUG
+    global VERBOSE, DEBUG, console
     VERBOSE = verbose
     DEBUG = debug
+
+    # Rebind the module-level console to this run's IO before anything prints,
+    # so every nested closure (slash commands, narrative renderer, autosave)
+    # writes to the right sink without touching ~60 call sites.
+    io = io or TerminalIO()
+    console = io.console
 
     # Load persisted UI language (missing/corrupt settings -> English).
     i18n.load_saved()
@@ -322,9 +332,8 @@ async def run_game(chat_fn, model, context_window, verbose=False, debug=False,
     if DEBUG:
         console.print(f"[dim]{tr('mode.debug')}[/dim]")
 
-    input_session = PromptSession()
-
-    wwf_path = await select_wwf(input_session)
+    if wwf_path is None:
+        wwf_path = await select_wwf(io)
     console.print(f"\n[green]{tr('world.selected')}[/green] {wwf_path}")
 
     player_path = os.path.splitext(wwf_path)[0] + ".player"
@@ -824,7 +833,7 @@ Refer to them when the player asks about past events. Do not replay or re-descri
                     while True:
                         if VERBOSE or DEBUG:
                             console.print(f"[dim]Context: {current_context_tokens:,} / {context_window:,} tokens[/dim]")
-                        user_input = await input_session.prompt_async(HTML(f'<ansicyan><b>{tr("prompt.action")}</b></ansicyan> '))
+                        user_input = await io.read_input(tr("prompt.action"))
                         user_input = user_input.strip()
 
                         if not user_input:
