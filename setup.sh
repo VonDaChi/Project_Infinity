@@ -9,6 +9,24 @@
 
 set -uo pipefail
 
+# --- 失败处理（提前定义：错误分支会调用，bash 顺序执行，必须在首次调用前定义） --
+goto_download_fail() {
+  echo
+  echo "============================================================"
+  echo " [失败] 自动下载/安装未完成。"
+  echo " 可能原因：当前环境无外网访问，或镜像/官方源均不可达。"
+  echo
+  echo " 手动恢复步骤 (Manual recovery):"
+  echo "   [1] 用浏览器下载对应 tarball（indygreg 已重定向至 astral-sh）："
+  echo "       https://github.com/${PBS_OWNER2}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
+  echo "   [2] 解压并把内容放入本目录的 python_embeded/ 下（使其含 bin/python3）"
+  echo "   [3] 进入 python_embeded/ 所在目录，运行："
+  echo "       python_embeded/bin/python3 -m pip install -r requirements.txt -i ${PIP_MIRROR}"
+  echo "   [4] 重跑 setup.sh（检测到 python_embeded/bin/python3 后会跳过下载）"
+  echo "============================================================"
+  exit 1
+}
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYDIR="$ROOT/python_embeded"
 PYEXE="$PYDIR/bin/python3"
@@ -164,23 +182,5 @@ fi
 
 echo
 echo "[OK] 全部完成！Python ${PYVER} 与依赖已装入 python_embeded/"
-echo "接下来请运行 launch.sh 选择要启动的后端。"
+echo "接下来请运行 launch.sh 选择要启动的后端，或 launch_webui.sh 启动 WebUI。"
 exit 0
-
-# --- 失败处理 ---------------------------------------------------------------
-goto_download_fail() {
-  echo
-  echo "============================================================"
-  echo " [失败] 自动下载/安装未完成。"
-  echo " 可能原因：当前环境无外网访问，或镜像/官方源均不可达。"
-  echo
-  echo " 手动恢复步骤 (Manual recovery):"
-  echo "   [1] 用浏览器下载对应 tarball（indygreg 已重定向至 astral-sh）："
-  echo "       https://github.com/${PBS_OWNER2}/python-build-standalone/releases/download/${PBS_TAG}/${TARBALL}"
-  echo "   [2] 解压并把内容放入本目录的 python_embeded/ 下（使其含 bin/python3）"
-  echo "   [3] 进入 python_embeded/ 所在目录，运行："
-  echo "       python_embeded/bin/python3 -m pip install -r requirements.txt -i ${PIP_MIRROR}"
-  echo "   [4] 重跑 setup.sh（检测到 python_embeded/bin/python3 后会跳过下载）"
-  echo "============================================================"
-  exit 1
-}
